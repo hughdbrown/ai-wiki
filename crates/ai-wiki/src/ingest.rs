@@ -302,6 +302,11 @@ fn copy_to_processed(src: &Path, dest: &Path) -> anyhow::Result<()> {
 // ─── File resolution ──────────────────────────────────────────────────────────
 
 fn resolve_files(path_str: &str) -> anyhow::Result<Vec<PathBuf>> {
+    // @filename — read file list, one path per line
+    if let Some(list_file) = path_str.strip_prefix('@') {
+        return read_file_list(list_file);
+    }
+
     let path = Path::new(path_str);
 
     if path.is_dir() {
@@ -355,6 +360,39 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn read_file_list(list_path: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let content = fs::read_to_string(list_path)
+        .with_context(|| format!("failed to read file list: {list_path}"))?;
+
+    let files: Vec<PathBuf> = content
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(PathBuf::from)
+        .collect();
+
+    if files.is_empty() {
+        anyhow::bail!("file list is empty: {list_path}");
+    }
+
+    // Verify all listed files exist
+    let mut missing = Vec::new();
+    for f in &files {
+        if !f.is_file() {
+            missing.push(f.display().to_string());
+        }
+    }
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "{} file(s) from list not found: {}",
+            missing.len(),
+            missing.join(", ")
+        );
+    }
+
+    Ok(files)
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -400,5 +438,55 @@ mod tests {
     fn test_resolve_no_match_returns_error() {
         let result = resolve_files("/nonexistent/path/to/nothing.xyz");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_file_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = dir.path().join("a.md");
+        let file_b = dir.path().join("b.txt");
+        fs::write(&file_a, "a").unwrap();
+        fs::write(&file_b, "b").unwrap();
+
+        let list_file = dir.path().join("files.txt");
+        fs::write(
+            &list_file,
+            format!(
+                "{}\n# comment line\n{}\n\n",
+                file_a.display(),
+                file_b.display()
+            ),
+        )
+        .unwrap();
+
+        let input = format!("@{}", list_file.display());
+        let resolved = resolve_files(&input).unwrap();
+        assert_eq!(resolved.len(), 2);
+    }
+
+    #[test]
+    fn test_resolve_file_list_missing_entry_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let list_file = dir.path().join("files.txt");
+        fs::write(&list_file, "/nonexistent/file.md\n").unwrap();
+
+        let input = format!("@{}", list_file.display());
+        let result = resolve_files(&input);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn test_resolve_file_list_empty_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let list_file = dir.path().join("empty.txt");
+        fs::write(&list_file, "# only comments\n\n").unwrap();
+
+        let input = format!("@{}", list_file.display());
+        let result = resolve_files(&input);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("empty"));
     }
 }
