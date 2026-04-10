@@ -224,7 +224,8 @@ Actions: `ingest`, `update`, `query`, `lint`
 
             if file_type.is_dir() {
                 Self::collect_md_files(&path, root, pages)?;
-            } else if file_type.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
+            } else if file_type.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md")
+            {
                 let relative = path
                     .strip_prefix(root)
                     .map_err(|e| {

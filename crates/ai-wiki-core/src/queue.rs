@@ -173,10 +173,7 @@ impl Queue {
         parent_id: Option<i64>,
     ) -> Result<i64, QueueError> {
         let path_str = file_path.to_str().ok_or_else(|| {
-            QueueError::InvalidStatus(format!(
-                "path is not valid UTF-8: {}",
-                file_path.display()
-            ))
+            QueueError::InvalidStatus(format!("path is not valid UTF-8: {}", file_path.display()))
         })?;
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
@@ -221,10 +218,7 @@ impl Queue {
             ],
         )?;
         if rows == 0 {
-            return Err(self.not_found_or_transition(
-                id,
-                ItemStatus::Queued.as_str(),
-            )?);
+            return Err(self.not_found_or_transition(id, ItemStatus::Queued.as_str())?);
         }
         Ok(())
     }
@@ -238,10 +232,7 @@ impl Queue {
             params![ItemStatus::Complete.as_str(), wiki_page_path, now, id, ItemStatus::InProgress.as_str()],
         )?;
         if rows == 0 {
-            return Err(self.not_found_or_transition(
-                id,
-                ItemStatus::InProgress.as_str(),
-            )?);
+            return Err(self.not_found_or_transition(id, ItemStatus::InProgress.as_str())?);
         }
         Ok(())
     }
@@ -255,10 +246,7 @@ impl Queue {
             params![ItemStatus::Rejected.as_str(), reason, now, id, ItemStatus::Queued.as_str()],
         )?;
         if rows == 0 {
-            return Err(self.not_found_or_transition(
-                id,
-                ItemStatus::Queued.as_str(),
-            )?);
+            return Err(self.not_found_or_transition(id, ItemStatus::Queued.as_str())?);
         }
         Ok(())
     }
@@ -734,11 +722,20 @@ mod tests {
         assert!(q.is_already_enqueued(Path::new("a.txt"), None).unwrap());
 
         // Same path with different parent is not a duplicate
-        let parent = q.enqueue(Path::new("archive.zip"), FileType::Zip, None).unwrap();
-        assert!(!q.is_already_enqueued(Path::new("a.txt"), Some(parent)).unwrap());
+        let parent = q
+            .enqueue(Path::new("archive.zip"), FileType::Zip, None)
+            .unwrap();
+        assert!(
+            !q.is_already_enqueued(Path::new("a.txt"), Some(parent))
+                .unwrap()
+        );
 
-        q.enqueue(Path::new("a.txt"), FileType::Text, Some(parent)).unwrap();
-        assert!(q.is_already_enqueued(Path::new("a.txt"), Some(parent)).unwrap());
+        q.enqueue(Path::new("a.txt"), FileType::Text, Some(parent))
+            .unwrap();
+        assert!(
+            q.is_already_enqueued(Path::new("a.txt"), Some(parent))
+                .unwrap()
+        );
     }
 
     #[test]

@@ -41,7 +41,10 @@ pub fn extract_zip(zip_path: &Path, output_dir: &Path) -> anyhow::Result<Vec<Pat
         // Ensure parent directories exist (for nested zip entries)
         if let Some(parent) = dest_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create parent directories for: {}", dest_path.display())
+                format!(
+                    "failed to create parent directories for: {}",
+                    dest_path.display()
+                )
             })?;
         }
 
