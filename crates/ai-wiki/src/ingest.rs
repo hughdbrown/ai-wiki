@@ -51,7 +51,7 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
     let mut totals = IngestResult::default();
 
     for file in &files {
-        match process_file(file, config, &queue, None) {
+        match process_file(file, config, &queue, None, 0) {
             Ok(result) => totals.merge(result),
             Err(e) => {
                 eprintln!("Error processing {}: {e:#}", file.display());
@@ -116,6 +116,8 @@ fn process_file(
                             }
                         }
                     }
+                    // Cleanup extracted files
+                    let _ = std::fs::remove_dir_all(&extract_dir);
                 }
                 Err(e) => {
                     eprintln!("Failed to extract zip {}: {e:#}", path.display());
@@ -157,6 +159,8 @@ fn process_file(
                                     result.errors += 1;
                                 }
                             }
+                            // Cleanup split chapter files
+                            let _ = std::fs::remove_dir_all(&chapter_dir);
                         }
                         Err(e) => {
                             eprintln!("Failed to split PDF chapters for {}: {e:#}", path.display());
@@ -349,17 +353,23 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     for entry in entries {
         let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
         let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to get file type for {}", path.display()))?;
 
-        if path.is_dir() {
+        if file_type.is_dir() {
             walk_dir(&path, files)?;
-        } else {
+        } else if file_type.is_file() {
             files.push(path);
         }
+        // symlinks are silently skipped
     }
 
     Ok(())
 }
 
+/// Read a file list (one path per line). Blank lines and lines starting with `#` are skipped.
+/// Relative paths are resolved from the current working directory, not the list file's location.
 fn read_file_list(list_path: &str) -> anyhow::Result<Vec<PathBuf>> {
     let content = fs::read_to_string(list_path)
         .with_context(|| format!("failed to read file list: {list_path}"))?;

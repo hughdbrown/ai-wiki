@@ -23,6 +23,10 @@ pub fn detect_file_type(path: &Path, config: &Config) -> FileClassification {
     }
 
     // 3. Check sensitive_filename_patterns in config (case-insensitive filename contains) -> Rejected
+    // Note: pattern matching is case-insensitive ASCII only. Unicode homoglyphs
+    // (e.g., Cyrillic characters resembling Latin) are not normalized. This is
+    // a convenience filter, not a security boundary — users should verify the
+    // rejection list in the wiki's TUI after ingestion.
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
