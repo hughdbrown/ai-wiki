@@ -1,0 +1,27 @@
+[workspace]
+members = ["crates/ai-wiki-core", "crates/ai-wiki", "crates/ai-wiki-mcp"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.3", features = ["derive"] }
+crossterm = "0.28"
+glob = "0.3"
+lopdf = "0.40"
+pdf-extract = "0.10"
+ratatui = "0.29"
+rmcp = { version = "1", features = ["server", "transport-io", "macros"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+schemars = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.40", features = ["full"] }
+toml = "0.8"
+zip = "2"

@@ -1,0 +1,13 @@
+[package]
+name = "ai-wiki-mcp"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ai-wiki-core = { path = "../ai-wiki-core" }
+anyhow.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

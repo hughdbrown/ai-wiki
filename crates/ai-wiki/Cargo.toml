@@ -1,0 +1,11 @@
+[package]
+name = "ai-wiki"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ai-wiki-core = { path = "../ai-wiki-core" }
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
