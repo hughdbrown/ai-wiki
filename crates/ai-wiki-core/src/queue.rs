@@ -62,15 +62,16 @@ impl FileType {
         }
     }
 
-    pub fn parse(s: &str) -> Self {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "markdown" => Self::Markdown,
-            "text" => Self::Text,
-            "pdf" => Self::Pdf,
-            "zip" => Self::Zip,
-            "audio" => Self::Audio,
-            "video" => Self::Video,
-            _ => Self::Unknown,
+            "markdown" => Some(Self::Markdown),
+            "text" => Some(Self::Text),
+            "pdf" => Some(Self::Pdf),
+            "zip" => Some(Self::Zip),
+            "audio" => Some(Self::Audio),
+            "video" => Some(Self::Video),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
         }
     }
 }
@@ -299,6 +300,10 @@ impl Queue {
     /// Returns the number of items actually requeued (items that were in
     /// error/rejected status). Items that no longer exist or have a different
     /// status are silently skipped.
+    ///
+    /// SAFETY: Uses unchecked_transaction because Queue methods take &self for Arc<Mutex<Queue>>
+    /// compatibility. The Mutex ensures only one caller at a time. Do not call other
+    /// transaction methods from within this method.
     pub fn requeue_items(&self, ids: &[i64]) -> Result<usize, QueueError> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let mut count = 0usize;
@@ -323,6 +328,10 @@ impl Queue {
     /// Also deletes error-status children of error parents. Both deletes run
     /// in a single transaction so the database stays consistent on failure.
     /// Returns `(error_count, child_count)`.
+    ///
+    /// SAFETY: Uses unchecked_transaction because Queue methods take &self for Arc<Mutex<Queue>>
+    /// compatibility. The Mutex ensures only one caller at a time. Do not call other
+    /// transaction methods from within this method.
     pub fn delete_errors(&self) -> Result<(u64, u64), QueueError> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
 
@@ -456,6 +465,10 @@ impl Queue {
 
     /// Return the oldest queued item and atomically mark it `in_progress`.
     /// Uses an explicit transaction so no other worker can claim the same item.
+    ///
+    /// SAFETY: Uses unchecked_transaction because Queue methods take &self for Arc<Mutex<Queue>>
+    /// compatibility. The Mutex ensures only one caller at a time. Do not call other
+    /// transaction methods from within this method.
     pub fn claim_next_queued(&self) -> Result<Option<QueueItem>, QueueError> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let item = tx
@@ -540,7 +553,7 @@ impl Queue {
         Ok(QueueItem {
             id: row.get(0)?,
             file_path: PathBuf::from(file_path_str),
-            file_type: FileType::parse(&file_type_str),
+            file_type: FileType::parse(&file_type_str).unwrap_or(FileType::Unknown),
             status,
             parent_id: row.get(4)?,
             wiki_page_path: row.get(5)?,

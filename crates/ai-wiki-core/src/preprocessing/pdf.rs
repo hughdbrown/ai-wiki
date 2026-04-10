@@ -58,7 +58,11 @@ pub fn split_pdf_chapters(
         return Ok(vec![path.to_path_buf()]);
     }
 
-    let mut page_starts: Vec<u32> = top_level.iter().map(|e| e.page as u32).collect();
+    let mut page_starts: Vec<u32> = top_level
+        .iter()
+        .map(|e| e.page as u32)
+        .filter(|&p| p >= 1 && p <= total_pages)
+        .collect();
     page_starts.sort();
     page_starts.dedup();
 
@@ -77,6 +81,10 @@ pub fn split_pdf_chapters(
         } else {
             total_pages
         };
+
+        if end < start {
+            continue; // skip degenerate range
+        }
 
         let output_path = output_dir.join(format!("{stem}_chapter_{:03}.pdf", i + 1));
         let status = super::run_tool(

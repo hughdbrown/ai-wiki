@@ -171,7 +171,7 @@ fn retry(config: &ai_wiki_core::config::Config, config_path: &Path) -> anyhow::R
     let retried = queue.requeue_items(&retryable_ids)?;
     // `retried` may be less than `retryable_ids.len()` if items changed status
     // between the list query and the requeue call; the difference is benign.
-    let skipped = error_items.len() - retried;
+    let skipped = error_items.len().saturating_sub(retried);
 
     println!("Retry: {retried} item(s) requeued, {skipped} skipped (no processed text or already changed).");
 
