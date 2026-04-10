@@ -1,4 +1,5 @@
 mod ingest;
+mod tui;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -39,9 +40,6 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Ingest { path } => ingest::run(&config, &path),
-        Commands::Tui => {
-            eprintln!("TUI not yet implemented");
-            Ok(())
-        }
+        Commands::Tui => tui::run(&config),
     }
 }
