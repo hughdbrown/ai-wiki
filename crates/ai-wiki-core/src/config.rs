@@ -75,6 +75,28 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.pdf.book_min_pages == 0 {
+            anyhow::bail!("pdf.book_min_pages must be greater than 0");
+        }
+
+        let tool_paths = [
+            ("qpdf_path", &self.tools.qpdf_path),
+            ("pdftotext_path", &self.tools.pdftotext_path),
+            ("pdftoppm_path", &self.tools.pdftoppm_path),
+            ("tesseract_path", &self.tools.tesseract_path),
+            ("ffmpeg_path", &self.tools.ffmpeg_path),
+            ("whisper_cpp_path", &self.tools.whisper_cpp_path),
+        ];
+        for (name, path) in tool_paths {
+            if path.is_empty() {
+                anyhow::bail!("tools.{name} must not be empty");
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read config file {}: {}", path.display(), e))?;
@@ -139,5 +161,24 @@ mod tests {
 
         let result = Config::load(&path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_default_config_validates() {
+        Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_book_min_pages() {
+        let mut config = Config::default();
+        config.pdf.book_min_pages = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_tool_path() {
+        let mut config = Config::default();
+        config.tools.qpdf_path = String::new();
+        assert!(config.validate().is_err());
     }
 }

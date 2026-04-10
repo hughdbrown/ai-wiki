@@ -100,23 +100,30 @@ impl Wiki {
     }
 
     pub fn update_index(&self, entry: &str) -> anyhow::Result<()> {
-        let path = self.root.join("index.md");
-        let mut content = fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
-        content.push_str(entry);
-        content.push('\n');
-        fs::write(&path, &content)
-            .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))
+        let path = self.safe_resolve("index.md")?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to open {}: {}", path.display(), e))?;
+        use std::io::Write;
+        writeln!(file, "{}", entry)
+            .map_err(|e| anyhow::anyhow!("Failed to append to {}: {}", path.display(), e))?;
+        Ok(())
     }
 
     pub fn append_log(&self, entry: &str) -> anyhow::Result<()> {
-        let path = self.root.join("log.md");
+        let path = self.safe_resolve("log.md")?;
         let date = Utc::now().format("%Y-%m-%d");
-        let mut content = fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
-        content.push_str(&format!("## [{date}] {entry}\n"));
-        fs::write(&path, &content)
-            .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", path.display(), e))
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to open {}: {}", path.display(), e))?;
+        use std::io::Write;
+        writeln!(file, "## [{date}] {entry}")
+            .map_err(|e| anyhow::anyhow!("Failed to append to {}: {}", path.display(), e))?;
+        Ok(())
     }
 
     fn default_index() -> String {

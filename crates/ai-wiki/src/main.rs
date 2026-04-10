@@ -37,6 +37,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("Created default config at {}", cli.config.display());
         config
     };
+    config.validate()?;
 
     match cli.command {
         Commands::Ingest { path } => ingest::run(&config, &path),

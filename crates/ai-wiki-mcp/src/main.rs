@@ -395,6 +395,7 @@ async fn main() -> Result<()> {
     } else {
         Config::default()
     };
+    config.validate()?;
 
     let queue = Queue::open(&config.paths.database_path)?;
 
