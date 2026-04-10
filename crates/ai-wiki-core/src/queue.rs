@@ -331,7 +331,7 @@ impl Queue {
             "DELETE FROM queue_items WHERE status = ?1 AND parent_id IN (SELECT id FROM queue_items WHERE status = ?1)",
             params![ItemStatus::Error.as_str()],
         )?;
-        // Delete the remaining top-level error items
+        // Delete all remaining error items
         let error_rows = tx.execute(
             "DELETE FROM queue_items WHERE status = ?1",
             params![ItemStatus::Error.as_str()],
