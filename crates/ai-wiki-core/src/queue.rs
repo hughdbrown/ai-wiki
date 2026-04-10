@@ -104,6 +104,9 @@ pub enum QueueError {
     #[error("invalid status: {0}")]
     InvalidStatus(String),
 
+    #[error("invalid path: {0}")]
+    InvalidPath(String),
+
     #[error("file already enqueued: {0}")]
     AlreadyEnqueued(String),
 
@@ -173,7 +176,7 @@ impl Queue {
         parent_id: Option<i64>,
     ) -> Result<i64, QueueError> {
         let path_str = file_path.to_str().ok_or_else(|| {
-            QueueError::InvalidStatus(format!("path is not valid UTF-8: {}", file_path.display()))
+            QueueError::InvalidPath(format!("path is not valid UTF-8: {}", file_path.display()))
         })?;
         let now = Utc::now().to_rfc3339();
         self.conn.execute(

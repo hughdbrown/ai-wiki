@@ -126,6 +126,12 @@ fn process_file(
                             }
                         }
                     }
+                    if let Err(e) = fs::remove_dir_all(&extract_dir) {
+                        eprintln!(
+                            "Warning: failed to clean up zip extract dir {}: {e:#}",
+                            extract_dir.display()
+                        );
+                    }
                 }
                 Err(e) => {
                     eprintln!("Failed to extract zip {}: {e:#}", path.display());
@@ -167,6 +173,12 @@ fn process_file(
                                     result.errors += 1;
                                 }
                             }
+                            if let Err(e) = fs::remove_dir_all(&chapter_dir) {
+                                eprintln!(
+                                    "Warning: failed to clean up PDF chapter dir {}: {e:#}",
+                                    chapter_dir.display()
+                                );
+                            }
                         }
                         Err(e) => {
                             eprintln!("Failed to split PDF chapters for {}: {e:#}", path.display());
@@ -185,6 +197,7 @@ fn process_file(
                         queue
                             .mark_error(id, &format!("{e:#}"))
                             .context("failed to mark PDF text-extraction error")?;
+                        result.queued = result.queued.saturating_sub(1);
                         result.errors += 1;
                     }
                 }
@@ -212,6 +225,7 @@ fn process_file(
                 queue
                     .mark_error(id, &format!("{e:#}"))
                     .context("failed to mark copy error")?;
+                result.queued = result.queued.saturating_sub(1);
                 result.errors += 1;
             }
         }
@@ -227,6 +241,7 @@ fn process_file(
                 queue
                     .mark_error(id, &format!("{e:#}"))
                     .context("failed to mark transcription error")?;
+                result.queued = result.queued.saturating_sub(1);
                 result.errors += 1;
             }
         }
@@ -273,12 +288,15 @@ fn transcribe_source(
     let audio_path: PathBuf;
     let audio_ref: &Path;
 
+    let mut cleanup_dir: Option<PathBuf> = None;
+
     if *file_type == FileType::Video {
         let audio_dir = config.paths.raw_dir.join(format!("audio_{item_id}"));
         let extracted = extract_audio(path, &audio_dir, config)
             .with_context(|| format!("failed to extract audio from video {}", path.display()))?;
         audio_path = extracted;
         audio_ref = &audio_path;
+        cleanup_dir = Some(audio_dir);
     } else {
         audio_ref = path;
     }
@@ -295,6 +313,15 @@ fn transcribe_source(
     })?;
     fs::write(&dest, transcript)
         .with_context(|| format!("failed to write transcript to {}", dest.display()))?;
+
+    if let Some(dir) = cleanup_dir {
+        if let Err(e) = fs::remove_dir_all(&dir) {
+            eprintln!(
+                "Warning: failed to clean up audio extract dir {}: {e:#}",
+                dir.display()
+            );
+        }
+    }
 
     Ok(())
 }

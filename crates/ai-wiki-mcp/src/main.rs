@@ -126,13 +126,10 @@ impl WikiServer {
         tokio::task::spawn_blocking(move || {
             let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
             let item = queue
-                .get_next_queued()
+                .claim_next_queued()
                 .map_err(|e| format!("Queue error: {e}"))?;
             match item {
                 Some(item) => {
-                    queue
-                        .mark_in_progress(item.id)
-                        .map_err(|e| format!("Failed to mark in_progress: {e}"))?;
                     let updated = queue
                         .get_item(item.id)
                         .map_err(|e| format!("Failed to re-read item: {e}"))?;
