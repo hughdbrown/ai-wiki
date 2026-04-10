@@ -1,0 +1,9 @@
+[package]
+name = "pdf-dump"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+indexmap.workspace = true
+lopdf.workspace = true

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ai-wiki-core", "crates/ai-wiki", "crates/ai-wiki-mcp"]
+members = ["crates/ai-wiki-core", "crates/ai-wiki", "crates/ai-wiki-mcp", "crates/pdf-dump"]
 resolver = "2"
 
 [workspace.package]
