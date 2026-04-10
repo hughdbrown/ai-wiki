@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use thiserror::Error;
 
 // ─── Enums ───────────────────────────────────────────────────────────────────
@@ -407,7 +407,7 @@ impl Queue {
     /// Return the oldest queued item and atomically mark it `in_progress`.
     /// Uses an explicit transaction so no other worker can claim the same item.
     pub fn claim_next_queued(&self) -> Result<Option<QueueItem>, QueueError> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let item = tx
             .query_row(
                 "SELECT id, file_path, file_type, status, parent_id, wiki_page_path,

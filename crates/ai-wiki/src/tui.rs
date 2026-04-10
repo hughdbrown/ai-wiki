@@ -60,6 +60,7 @@ fn run_app<B: Backend>(
     let mut last_refresh = Instant::now() - Duration::from_secs(3);
     let mut view = View::Table;
     let mut detail_scroll: u16 = 0;
+    let mut status_msg: Option<(String, Instant)> = None;
 
     loop {
         // Refresh data every 2 seconds (only in table view)
@@ -81,8 +82,16 @@ fn run_app<B: Backend>(
             }
         }
 
+        // Expire status message after 5 seconds
+        if let Some((_, ts)) = &status_msg {
+            if ts.elapsed() >= Duration::from_secs(5) {
+                status_msg = None;
+            }
+        }
+
+        let status_text = status_msg.as_ref().map(|(msg, _)| msg.as_str());
         terminal.draw(|f| match &view {
-            View::Table => draw_table(f, &items, &counts, &mut table_state),
+            View::Table => draw_table(f, &items, &counts, &mut table_state, status_text),
             View::Detail(item) => draw_detail(f, item, config, detail_scroll),
         })?;
 
@@ -140,7 +149,20 @@ fn run_app<B: Backend>(
                                     item.status,
                                     ItemStatus::Error | ItemStatus::Rejected
                                 ) {
-                                    let _ = queue.requeue_item(item.id);
+                                    match queue.requeue_item(item.id) {
+                                        Ok(()) => {
+                                            status_msg = Some((
+                                                format!("Item {} requeued", item.id),
+                                                Instant::now(),
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            status_msg = Some((
+                                                format!("Retry failed for item {}: {e}", item.id),
+                                                Instant::now(),
+                                            ));
+                                        }
+                                    }
                                     last_refresh =
                                         Instant::now() - Duration::from_secs(3);
                                 }
@@ -159,7 +181,20 @@ fn run_app<B: Backend>(
                             item.status,
                             ItemStatus::Error | ItemStatus::Rejected
                         ) {
-                            let _ = queue.requeue_item(item.id);
+                            match queue.requeue_item(item.id) {
+                                Ok(()) => {
+                                    status_msg = Some((
+                                        format!("Item {} requeued", item.id),
+                                        Instant::now(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    status_msg = Some((
+                                        format!("Retry failed for item {}: {e}", item.id),
+                                        Instant::now(),
+                                    ));
+                                }
+                            }
                             view = View::Table;
                             last_refresh = Instant::now() - Duration::from_secs(3);
                         }
@@ -184,6 +219,7 @@ fn draw_table(
     items: &[QueueItem],
     counts: &[(String, u64)],
     table_state: &mut TableState,
+    status_msg: Option<&str>,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -194,8 +230,12 @@ fn draw_table(
         ])
         .split(f.area());
 
-    // Status bar
-    let status_text = format_counts(counts);
+    // Status bar: show status message if present, otherwise show counts
+    let status_text = if let Some(msg) = status_msg {
+        msg.to_owned()
+    } else {
+        format_counts(counts)
+    };
     let status_block = Block::default().borders(Borders::ALL).title("Queue Status");
     let status_para = Paragraph::new(status_text)
         .block(status_block)
