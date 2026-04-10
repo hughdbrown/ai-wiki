@@ -451,15 +451,20 @@ impl Queue {
         })?;
 
         let parse_ts = |s: String| -> rusqlite::Result<DateTime<Utc>> {
-            DateTime::parse_from_rfc3339(&s)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })
+            // Try RFC3339 first (our native format), then SQLite datetime() format
+            if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+                return Ok(dt.with_timezone(&Utc));
+            }
+            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
+                return Ok(dt.and_utc());
+            }
+            Err(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::other(format!(
+                    "unparseable timestamp: {s}"
+                ))),
+            ))
         };
 
         Ok(QueueItem {
