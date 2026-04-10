@@ -62,6 +62,11 @@ mcp:
 mcp-register:
     claude mcp add ai-wiki -- cargo run --manifest-path {{justfile_directory()}}/Cargo.toml -p ai-wiki-mcp
 
+# Install ai-wiki and ai-wiki-mcp to ~/.cargo/bin
+deploy:
+    cargo install --path crates/ai-wiki
+    cargo install --path crates/ai-wiki-mcp
+
 # Clean build artifacts
 clean:
     cargo clean
