@@ -252,7 +252,7 @@ fn process_file(
                 .context("failed to enqueue markdown/text file")?;
             result.queued += 1;
 
-            let dest = config.paths.processed_dir.join(format!("{id}.txt"));
+            let dest = config.paths.processed_text_path(id);
             if let Err(e) = copy_to_processed(path, &dest) {
                 eprintln!("Failed to copy {} to processed dir: {e:#}", path.display());
                 queue
@@ -299,7 +299,7 @@ fn extract_and_store_text(path: &Path, item_id: i64, config: &Config) -> anyhow:
     let text = extract_pdf_text(path, config)
         .with_context(|| format!("extract_pdf_text failed for {}", path.display()))?;
 
-    let dest = config.paths.processed_dir.join(format!("{item_id}.txt"));
+    let dest = config.paths.processed_text_path(item_id);
     fs::create_dir_all(&config.paths.processed_dir).with_context(|| {
         format!(
             "failed to create processed dir: {}",
@@ -337,7 +337,7 @@ fn transcribe_source(
     let transcript = transcribe_audio(audio_ref, config)
         .with_context(|| format!("failed to transcribe {}", audio_ref.display()))?;
 
-    let dest = config.paths.processed_dir.join(format!("{item_id}.txt"));
+    let dest = config.paths.processed_text_path(item_id);
     fs::create_dir_all(&config.paths.processed_dir).with_context(|| {
         format!(
             "failed to create processed dir: {}",

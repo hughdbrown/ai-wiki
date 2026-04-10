@@ -271,8 +271,7 @@ impl WikiServer {
                     .get_item(req.id)
                     .map_err(|e| format!("item {}: {e}", req.id))?;
             }
-            let processed_dir = &config.paths.processed_dir;
-            let path = processed_dir.join(format!("{}.txt", req.id));
+            let path = config.paths.processed_text_path(req.id);
             std::fs::read_to_string(&path).map_err(|_| {
                 format!(
                     "failed to read processed text for item {}: file not found or unreadable",

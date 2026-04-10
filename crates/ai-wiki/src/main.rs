@@ -161,18 +161,14 @@ fn retry(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut retried = 0usize;
-    let mut skipped = 0usize;
+    let retryable_ids: Vec<i64> = error_items
+        .iter()
+        .filter(|item| config.paths.processed_text_path(item.id).exists())
+        .map(|item| item.id)
+        .collect();
 
-    for item in &error_items {
-        let processed_path = config.paths.processed_dir.join(format!("{}.txt", item.id));
-        if processed_path.exists() {
-            queue.requeue_item(item.id)?;
-            retried += 1;
-        } else {
-            skipped += 1;
-        }
-    }
+    let skipped = error_items.len() - retryable_ids.len();
+    let retried = queue.requeue_items(&retryable_ids)?;
 
     println!("Retry: {retried} item(s) requeued, {skipped} skipped (no processed text).");
 
@@ -194,14 +190,14 @@ fn clear(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let count = error_items.len();
-
     // Delete error items from the database
-    let deleted = queue.delete_errors()?;
+    let (errors, children) = queue.delete_errors()?;
 
-    println!("Cleared {deleted} errored item(s) from the queue.");
-    if deleted != count as u64 {
-        println!("  (expected {count}, deleted {deleted})");
+    let total = errors + children;
+    if children > 0 {
+        println!("Cleared {total} item(s) from the queue ({errors} errored + {children} errored children).");
+    } else {
+        println!("Cleared {errors} errored item(s) from the queue.");
     }
     println!("You can now re-ingest the original files:");
     println!("  ai-wiki ingest <path>");

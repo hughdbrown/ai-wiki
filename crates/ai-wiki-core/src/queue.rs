@@ -294,18 +294,51 @@ impl Queue {
         Ok(())
     }
 
+    /// Requeue multiple items in a single transaction.
+    ///
+    /// Returns the number of items actually requeued (items that were in
+    /// error/rejected status). Items that no longer exist or have a different
+    /// status are silently skipped.
+    pub fn requeue_items(&self, ids: &[i64]) -> Result<usize, QueueError> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let mut count = 0usize;
+        for &id in ids {
+            let rows = tx.execute(
+                "UPDATE queue_items SET status = ?1, started_at = NULL, completed_at = NULL, error_message = NULL WHERE id = ?2 AND status IN (?3, ?4)",
+                params![
+                    ItemStatus::Queued.as_str(),
+                    id,
+                    ItemStatus::Error.as_str(),
+                    ItemStatus::Rejected.as_str(),
+                ],
+            )?;
+            count += rows;
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
     /// Delete all items with status `Error` from the queue.
-    pub fn delete_errors(&self) -> Result<u64, QueueError> {
-        // First delete children of error parents, then delete the error items themselves
-        let child_rows = self.conn.execute(
-            "DELETE FROM queue_items WHERE parent_id IN (SELECT id FROM queue_items WHERE status = ?1)",
+    ///
+    /// Also deletes error-status children of error parents. Both deletes run
+    /// in a single transaction so the database stays consistent on failure.
+    /// Returns `(error_count, child_count)`.
+    pub fn delete_errors(&self) -> Result<(u64, u64), QueueError> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+
+        // Delete children that are themselves errored and whose parent is also errored
+        let child_rows = tx.execute(
+            "DELETE FROM queue_items WHERE status = ?1 AND parent_id IN (SELECT id FROM queue_items WHERE status = ?1)",
             params![ItemStatus::Error.as_str()],
         )?;
-        let rows = self.conn.execute(
+        // Delete the remaining top-level error items
+        let error_rows = tx.execute(
             "DELETE FROM queue_items WHERE status = ?1",
             params![ItemStatus::Error.as_str()],
         )?;
-        Ok((child_rows + rows) as u64)
+
+        tx.commit()?;
+        Ok((error_rows as u64, child_rows as u64))
     }
 
     // ─── Read operations ──────────────────────────────────────────────────────

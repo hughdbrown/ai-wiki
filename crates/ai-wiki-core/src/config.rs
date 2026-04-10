@@ -74,6 +74,15 @@ impl Default for Config {
     }
 }
 
+impl PathsConfig {
+    /// Return the path where processed text for a given queue item ID is stored.
+    ///
+    /// This is the single source of truth for the `{id}.txt` naming convention.
+    pub fn processed_text_path(&self, id: i64) -> PathBuf {
+        self.processed_dir.join(format!("{id}.txt"))
+    }
+}
+
 impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.pdf.book_min_pages == 0 {
