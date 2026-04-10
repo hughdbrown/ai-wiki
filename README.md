@@ -43,7 +43,11 @@ Three layers:
 
 **Rust toolchain:**
 ```bash
+# Option 1: Official rustup installer
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Option 2: Install via Homebrew (macOS)
+brew install rustup
 ```
 
 **External tools** (for PDF processing):
@@ -125,7 +129,7 @@ ai-wiki ingest ~/Downloads/paper.pdf
 # Ingest a directory
 ai-wiki ingest ~/Downloads/rust-books/
 
-# Ingest with a glob pattern
+# Ingest with a glob pattern (quotes prevent shell expansion; ai-wiki expands globs internally)
 ai-wiki ingest "~/Downloads/*.pdf"
 
 # Ingest from a file list (one path per line, # comments allowed)
@@ -156,6 +160,8 @@ Ingest complete — queued: 500, rejected: 12, errors: 3, skipped: 279 (4m 23s)
 ### Phase 2: Process (LLM)
 
 Processing invokes Claude to read the extracted text and build wiki pages.
+
+> **Security note:** The `process` command runs Claude with broad tool access (`--dangerously-skip-permissions`). Only process documents you trust, as source content could potentially trigger unintended actions via prompt injection.
 
 ```bash
 ai-wiki process
