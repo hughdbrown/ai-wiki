@@ -103,6 +103,9 @@ pub enum QueueError {
 
     #[error("invalid status: {0}")]
     InvalidStatus(String),
+
+    #[error("file already enqueued: {0}")]
+    AlreadyEnqueued(String),
 }
 
 // ─── Queue ────────────────────────────────────────────────────────────────────
@@ -147,7 +150,8 @@ impl Queue {
             );
             CREATE INDEX IF NOT EXISTS idx_queue_status    ON queue_items (status);
             CREATE INDEX IF NOT EXISTS idx_queue_parent_id ON queue_items (parent_id);
-            CREATE INDEX IF NOT EXISTS idx_queue_created   ON queue_items (created_at);",
+            CREATE INDEX IF NOT EXISTS idx_queue_created   ON queue_items (created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_file_parent ON queue_items (file_path, COALESCE(parent_id, 0));",
         )?;
         Ok(())
     }
@@ -174,6 +178,20 @@ impl Queue {
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Check if a file has already been enqueued (by file_path and parent_id).
+    pub fn is_already_enqueued(
+        &self,
+        file_path: &Path,
+        parent_id: Option<i64>,
+    ) -> Result<bool, QueueError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM queue_items WHERE file_path = ?1 AND parent_id IS ?2",
+            params![file_path.to_string_lossy().as_ref(), parent_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     /// Set status to `InProgress` and record `started_at`.
@@ -623,5 +641,29 @@ mod tests {
 
         let result = q.get_item(999);
         assert!(matches!(result, Err(QueueError::NotFound(999))));
+    }
+
+    #[test]
+    fn test_is_already_enqueued() {
+        let q = make_queue();
+        assert!(!q.is_already_enqueued(Path::new("a.txt"), None).unwrap());
+
+        q.enqueue(Path::new("a.txt"), FileType::Text, None).unwrap();
+        assert!(q.is_already_enqueued(Path::new("a.txt"), None).unwrap());
+
+        // Same path with different parent is not a duplicate
+        let parent = q.enqueue(Path::new("archive.zip"), FileType::Zip, None).unwrap();
+        assert!(!q.is_already_enqueued(Path::new("a.txt"), Some(parent)).unwrap());
+
+        q.enqueue(Path::new("a.txt"), FileType::Text, Some(parent)).unwrap();
+        assert!(q.is_already_enqueued(Path::new("a.txt"), Some(parent)).unwrap());
+    }
+
+    #[test]
+    fn test_duplicate_enqueue_rejected_by_unique_index() {
+        let q = make_queue();
+        q.enqueue(Path::new("a.txt"), FileType::Text, None).unwrap();
+        let result = q.enqueue(Path::new("a.txt"), FileType::Text, None);
+        assert!(result.is_err()); // UNIQUE constraint violation
     }
 }

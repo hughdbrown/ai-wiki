@@ -78,6 +78,12 @@ fn process_file(
 ) -> anyhow::Result<IngestResult> {
     let mut result = IngestResult::default();
 
+    // Skip files that have already been enqueued
+    if queue.is_already_enqueued(path, parent_id)? {
+        eprintln!("Skipping (already ingested): {}", path.display());
+        return Ok(result);
+    }
+
     match detect_file_type(path, config) {
         FileClassification::Rejected(reason) => {
             let id = queue
