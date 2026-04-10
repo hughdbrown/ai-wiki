@@ -101,6 +101,32 @@ enum Commands {
                       and only pick up the ones that previously failed."
     )]
     Clear,
+
+    /// Queue operations (used by the Claude process prompt)
+    #[command(subcommand)]
+    Queue(QueueCommands),
+}
+
+#[derive(Subcommand)]
+enum QueueCommands {
+    /// Atomically claim the next queued item and print its details as JSON
+    Claim,
+
+    /// Mark an in-progress item as complete
+    Complete {
+        /// Queue item ID
+        id: i64,
+        /// Path to the created wiki page (relative to wiki dir)
+        wiki_page_path: String,
+    },
+
+    /// Mark an item as errored
+    Error {
+        /// Queue item ID
+        id: i64,
+        /// Error description
+        message: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -122,6 +148,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Process => process::run(&config),
         Commands::Retry => retry(&config),
         Commands::Clear => clear(&config),
+        Commands::Queue(cmd) => queue_cmd(&config, cmd),
     }
 }
 
@@ -178,6 +205,39 @@ fn clear(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
     }
     println!("You can now re-ingest the original files:");
     println!("  ai-wiki ingest <path>");
+
+    Ok(())
+}
+
+fn queue_cmd(config: &ai_wiki_core::config::Config, cmd: QueueCommands) -> anyhow::Result<()> {
+    let queue = ai_wiki_core::queue::Queue::open(&config.paths.database_path)?;
+
+    match cmd {
+        QueueCommands::Claim => {
+            match queue.claim_next_queued()? {
+                Some(item) => {
+                    println!(
+                        "{}|{}|{}|{}",
+                        item.id,
+                        item.file_path.display(),
+                        item.file_type.as_str(),
+                        item.parent_id.map_or("none".to_owned(), |pid| pid.to_string()),
+                    );
+                }
+                None => {
+                    println!("EMPTY");
+                }
+            }
+        }
+        QueueCommands::Complete { id, wiki_page_path } => {
+            queue.mark_complete(id, &wiki_page_path)?;
+            println!("Marked item {id} as complete.");
+        }
+        QueueCommands::Error { id, message } => {
+            queue.mark_error(id, &message)?;
+            println!("Marked item {id} as error.");
+        }
+    }
 
     Ok(())
 }
