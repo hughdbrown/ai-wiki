@@ -53,6 +53,7 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
     let ingest_start = std::time::Instant::now();
 
     let mut skipped: usize = 0;
+    let mut top_level_errors: usize = 0;
     for (i, file) in files.iter().enumerate() {
         let file_name = file
             .file_name()
@@ -80,7 +81,7 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
             Err(e) => {
                 let elapsed = item_start.elapsed();
                 eprintln!("ERROR ({:.1}s): {e:#}", elapsed.as_secs_f64());
-                totals.errors += 1;
+                top_level_errors += 1;
             }
         }
     }
@@ -90,11 +91,12 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
     let secs = total_elapsed.as_secs() % 60;
 
     println!(
-        "Ingest complete — queued: {}, rejected: {}, errors: {}, skipped: {} ({mins}m {secs}s)",
+        "Ingest complete — queued: {}, rejected: {}, errors: {}, skipped: {}, failed: {} ({mins}m {secs}s)",
         totals.queued,
         totals.rejected,
         totals.errors,
-        skipped
+        skipped,
+        top_level_errors
     );
 
     Ok(())
