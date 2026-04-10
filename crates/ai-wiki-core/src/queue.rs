@@ -106,6 +106,13 @@ pub enum QueueError {
 
     #[error("file already enqueued: {0}")]
     AlreadyEnqueued(String),
+
+    #[error("invalid status transition for item {id}: expected {expected}, got {actual}")]
+    InvalidTransition {
+        id: i64,
+        expected: String,
+        actual: String,
+    },
 }
 
 // ─── Queue ────────────────────────────────────────────────────────────────────
@@ -195,45 +202,63 @@ impl Queue {
     }
 
     /// Set status to `InProgress` and record `started_at`.
+    /// Returns `InvalidTransition` if the item is not currently `queued`.
     pub fn mark_in_progress(&self, id: i64) -> Result<(), QueueError> {
         let now = Utc::now().to_rfc3339();
         let rows = self.conn.execute(
-            "UPDATE queue_items SET status = ?1, started_at = ?2 WHERE id = ?3",
-            params![ItemStatus::InProgress.as_str(), now, id],
+            "UPDATE queue_items SET status = ?1, started_at = ?2 WHERE id = ?3 AND status = ?4",
+            params![
+                ItemStatus::InProgress.as_str(),
+                now,
+                id,
+                ItemStatus::Queued.as_str(),
+            ],
         )?;
         if rows == 0 {
-            return Err(QueueError::NotFound(id));
+            return Err(self.not_found_or_transition(
+                id,
+                ItemStatus::Queued.as_str(),
+            )?);
         }
         Ok(())
     }
 
     /// Set status to `Complete` and record the output wiki page path and `completed_at`.
+    /// Returns `InvalidTransition` if the item is not currently `in_progress`.
     pub fn mark_complete(&self, id: i64, wiki_page_path: &str) -> Result<(), QueueError> {
         let now = Utc::now().to_rfc3339();
         let rows = self.conn.execute(
-            "UPDATE queue_items SET status = ?1, wiki_page_path = ?2, completed_at = ?3 WHERE id = ?4",
-            params![ItemStatus::Complete.as_str(), wiki_page_path, now, id],
+            "UPDATE queue_items SET status = ?1, wiki_page_path = ?2, completed_at = ?3 WHERE id = ?4 AND status = ?5",
+            params![ItemStatus::Complete.as_str(), wiki_page_path, now, id, ItemStatus::InProgress.as_str()],
         )?;
         if rows == 0 {
-            return Err(QueueError::NotFound(id));
+            return Err(self.not_found_or_transition(
+                id,
+                ItemStatus::InProgress.as_str(),
+            )?);
         }
         Ok(())
     }
 
     /// Set status to `Rejected` and record the rejection reason and `completed_at`.
+    /// Returns `InvalidTransition` if the item is not currently `queued`.
     pub fn mark_rejected(&self, id: i64, reason: &str) -> Result<(), QueueError> {
         let now = Utc::now().to_rfc3339();
         let rows = self.conn.execute(
-            "UPDATE queue_items SET status = ?1, error_message = ?2, completed_at = ?3 WHERE id = ?4",
-            params![ItemStatus::Rejected.as_str(), reason, now, id],
+            "UPDATE queue_items SET status = ?1, error_message = ?2, completed_at = ?3 WHERE id = ?4 AND status = ?5",
+            params![ItemStatus::Rejected.as_str(), reason, now, id, ItemStatus::Queued.as_str()],
         )?;
         if rows == 0 {
-            return Err(QueueError::NotFound(id));
+            return Err(self.not_found_or_transition(
+                id,
+                ItemStatus::Queued.as_str(),
+            )?);
         }
         Ok(())
     }
 
     /// Set status to `Error` and record the error message and `completed_at`.
+    /// Errors can happen from any state, so no status guard is applied.
     pub fn mark_error(&self, id: i64, message: &str) -> Result<(), QueueError> {
         let now = Utc::now().to_rfc3339();
         let rows = self.conn.execute(
@@ -360,7 +385,50 @@ impl Queue {
         Ok(incomplete == 0)
     }
 
+    /// Return the oldest queued item and atomically mark it `in_progress`.
+    /// Uses an explicit transaction so no other worker can claim the same item.
+    pub fn claim_next_queued(&self) -> Result<Option<QueueItem>, QueueError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let item = tx
+            .query_row(
+                "SELECT id, file_path, file_type, status, parent_id, wiki_page_path,
+                    error_message, created_at, started_at, completed_at
+             FROM queue_items
+             WHERE status = ?1
+             ORDER BY created_at ASC
+             LIMIT 1",
+                params![ItemStatus::Queued.as_str()],
+                Self::row_to_item,
+            )
+            .optional()?;
+
+        if let Some(ref item) = item {
+            let now = Utc::now().to_rfc3339();
+            tx.execute(
+                "UPDATE queue_items SET status = ?1, started_at = ?2 WHERE id = ?3",
+                params![ItemStatus::InProgress.as_str(), now, item.id],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(item)
+    }
+
     // ─── Helper ───────────────────────────────────────────────────────────────
+
+    /// Determine whether a zero-row update was due to the item not existing or
+    /// a status mismatch, and return the appropriate error.
+    fn not_found_or_transition(&self, id: i64, expected: &str) -> Result<QueueError, QueueError> {
+        match self.get_item(id) {
+            Ok(item) => Ok(QueueError::InvalidTransition {
+                id,
+                expected: expected.to_owned(),
+                actual: item.status.as_str().to_owned(),
+            }),
+            Err(QueueError::NotFound(_)) => Ok(QueueError::NotFound(id)),
+            Err(e) => Err(e),
+        }
+    }
 
     fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
         let file_path_str: String = row.get(1)?;

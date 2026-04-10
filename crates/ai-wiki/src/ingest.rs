@@ -122,6 +122,7 @@ fn process_file(
                     queue
                         .mark_error(id, &format!("{e:#}"))
                         .context("failed to mark zip error")?;
+                    result.queued = result.queued.saturating_sub(1);
                     result.errors += 1;
                 }
             }
@@ -162,18 +163,10 @@ fn process_file(
                             queue
                                 .mark_error(id, &format!("{e:#}"))
                                 .context("failed to mark PDF chapter-split error")?;
+                            result.queued = result.queued.saturating_sub(1);
                             result.errors += 1;
                         }
                     }
-                }
-
-                Ok(PdfClassification::Sensitive(reason)) => {
-                    queue
-                        .mark_rejected(id, &reason)
-                        .context("failed to mark sensitive PDF rejected")?;
-                    result.rejected += 1;
-                    // Don't double-count — undo the queued increment above
-                    result.queued = result.queued.saturating_sub(1);
                 }
 
                 Ok(PdfClassification::Simple) => {
@@ -191,6 +184,7 @@ fn process_file(
                     queue
                         .mark_error(id, &format!("{e:#}"))
                         .context("failed to mark PDF classification error")?;
+                    result.queued = result.queued.saturating_sub(1);
                     result.errors += 1;
                 }
             }

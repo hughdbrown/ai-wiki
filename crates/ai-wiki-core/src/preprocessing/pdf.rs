@@ -11,7 +11,6 @@ use crate::config::Config;
 pub enum PdfClassification {
     Simple,
     Book { chapter_count: usize },
-    Sensitive(String),
 }
 
 fn count_top_level_outlines(doc: &Document) -> usize {
@@ -170,14 +169,12 @@ pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> 
 
     // Fallback: render PDF pages to images with pdftoppm, then OCR each with tesseract
     match ocr_pdf_text(path, config) {
-        Ok(text) => return Ok(text),
-        Err(e) => {
-            return Err(anyhow::anyhow!(
-                "failed to extract text from PDF: {} — all methods (pdf-extract, pdftotext, tesseract) failed: {}",
-                path.display(),
-                e
-            ))
-        }
+        Ok(text) => Ok(text),
+        Err(e) => Err(anyhow::anyhow!(
+            "failed to extract text from PDF: {} — all methods (pdf-extract, pdftotext, tesseract) failed: {}",
+            path.display(),
+            e
+        )),
     }
 }
 
@@ -205,7 +202,7 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
     let mut pages: Vec<_> = std::fs::read_dir(&temp_dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "ppm"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "ppm"))
         .collect();
     pages.sort();
 

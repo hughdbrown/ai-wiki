@@ -26,13 +26,20 @@ pub fn extract_zip(zip_path: &Path, output_dir: &Path) -> anyhow::Result<Vec<Pat
             continue;
         }
 
-        // Zip-slip protection: use only the file name, not the full path
-        let file_name = entry
-            .enclosed_name()
-            .and_then(|p| p.file_name().map(PathBuf::from))
-            .with_context(|| format!("zip entry {i} has an unsafe or empty path"))?;
+        // Zip-slip protection: enclosed_name() strips all `..` components.
+        // Preserve the relative directory structure under output_dir.
+        let safe_path = match entry.enclosed_name() {
+            Some(p) => p.to_path_buf(),
+            None => continue, // skip entries with unsafe paths
+        };
+        let dest_path = output_dir.join(&safe_path);
 
-        let dest_path = output_dir.join(&file_name);
+        // Ensure parent directories exist (for nested zip entries)
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create parent directories for: {}", dest_path.display())
+            })?;
+        }
 
         let mut dest_file = fs::File::create(&dest_path)
             .with_context(|| format!("failed to create file: {}", dest_path.display()))?;
@@ -76,15 +83,21 @@ mod tests {
         let paths = extract_zip(&zip_path, &output_dir).unwrap();
 
         assert_eq!(paths.len(), 2);
-        // Both files should exist in output_dir (zip-slip: flat, no subdir)
+        // All extracted files should exist
         for p in &paths {
             assert!(p.exists(), "expected file to exist: {}", p.display());
         }
 
-        // Check content of hello.txt
+        // Check content of hello.txt (at the root of output_dir)
         let hello = output_dir.join("hello.txt");
         let content = fs::read_to_string(&hello).unwrap();
         assert_eq!(content, "hello world");
+
+        // subdir/data.txt should be preserved in its subdirectory
+        let data = output_dir.join("subdir").join("data.txt");
+        assert!(data.exists(), "expected subdir/data.txt to exist");
+        let data_content = fs::read_to_string(&data).unwrap();
+        assert_eq!(data_content, "some data");
     }
 
     #[test]
