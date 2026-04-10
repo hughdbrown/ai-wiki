@@ -114,14 +114,9 @@ pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> 
     };
     match pdf_extract_result {
         Ok(Ok(text)) if !text.trim().is_empty() => return Ok(text),
-        Ok(Err(e)) => {
-            eprintln!("pdf-extract failed for {}: {e}", path.display());
-        }
-        Err(_) => {
-            eprintln!(
-                "pdf-extract panicked for {} (likely malformed font data), falling back to pdftotext",
-                path.display()
-            );
+        Ok(Err(_)) | Err(_) => {
+            // pdf-extract failed or panicked (common with CFF font encoding issues).
+            // Not worth logging — pdftotext handles these files fine.
         }
         _ => {} // empty text, fall through
     }
