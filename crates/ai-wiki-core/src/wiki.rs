@@ -39,6 +39,13 @@ impl Wiki {
             })?;
         }
 
+        let claude_md_path = self.root.join("CLAUDE.md");
+        if !claude_md_path.exists() {
+            fs::write(&claude_md_path, Self::default_claude_md()).map_err(|e| {
+                anyhow::anyhow!("Failed to write {}: {}", claude_md_path.display(), e)
+            })?;
+        }
+
         Ok(())
     }
 
@@ -101,6 +108,81 @@ impl Wiki {
 
     fn default_index() -> String {
         "# Wiki Index\n\n## Entities\n\n## Concepts\n\n## Claims\n\n## Sources\n".to_string()
+    }
+
+    fn default_claude_md() -> String {
+        r#"# AI Wiki Schema
+
+## Wiki Structure
+
+This is an Obsidian-native wiki maintained by an LLM via MCP tools.
+
+### Directories
+- `entities/` — People, places, organizations
+- `concepts/` — Ideas, themes, theories
+- `claims/` — Specific assertions from sources (tag data points with `data-point: true`)
+- `sources/` — Summaries of ingested source files
+
+### Page Format
+
+Every page must have YAML frontmatter:
+
+```yaml
+---
+type: entity | concept | claim | source
+tags: [relevant, tags]
+sources: [source-filename.pdf]
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+data-point: true  # only for claims that are data points
+contradicted: true  # only if contradicted by another source
+---
+```
+
+Use `[[wikilinks]]` for all cross-references between pages.
+
+### Contradictions
+
+When a new source contradicts an existing claim or page, add a callout:
+
+```markdown
+> [!warning] Contradiction
+> Source A claims X, but Source B (this source) claims Y.
+```
+
+Tag the page with `contradicted: true` in frontmatter.
+
+### Ingestion Workflow
+
+For each source item from the queue:
+
+1. Call `get_next_item` to receive the next source
+2. Call `read_source` to read the preprocessed text
+3. Call `read_index` to understand what exists in the wiki
+4. Read relevant existing pages with `read_page`
+5. Extract entities, concepts, claims, and data points
+6. Create or update wiki pages with `write_page`
+7. Update cross-references using `[[wikilinks]]`
+8. Flag any contradictions with existing content
+9. Call `update_index` for each new page
+10. Call `append_log` with a summary of what was ingested
+11. Call `complete_item` with the primary wiki page path
+
+### Index Format
+
+Entries in index.md follow this format:
+```
+- [[directory/page-name]] — One-line summary
+```
+
+Organized under section headings: ## Entities, ## Concepts, ## Claims, ## Sources
+
+### Log Format
+
+Each log entry is prefixed: `## [YYYY-MM-DD] action | Title`
+
+Actions: `ingest`, `update`, `query`, `lint`
+"#.to_string()
     }
 
     fn collect_md_files(dir: &Path, root: &Path, pages: &mut Vec<String>) -> anyhow::Result<()> {
@@ -189,8 +271,8 @@ mod tests {
         wiki.write_page("claims/safe.md", "# Safe").unwrap();
 
         let pages = wiki.list_pages(None).unwrap();
-        // 3 written pages + index.md + log.md = 5
-        assert_eq!(pages.len(), 5);
+        // 3 written pages + index.md + log.md + CLAUDE.md = 6
+        assert_eq!(pages.len(), 6);
 
         let entity_pages = wiki.list_pages(Some("entities")).unwrap();
         assert_eq!(entity_pages.len(), 1);
