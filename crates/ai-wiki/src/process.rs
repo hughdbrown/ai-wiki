@@ -103,7 +103,7 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_prompt(config: &Config, batch_size: usize) -> String {
+fn build_prompt(config: &Config, total: usize) -> String {
     format!(
         r#"You are processing source documents from an ai-wiki queue into an Obsidian wiki.
 
@@ -111,7 +111,7 @@ fn build_prompt(config: &Config, batch_size: usize) -> String {
 
 - **Wiki directory:** {wiki_dir}
 - **Processed text directory:** {processed_dir}
-- **Batch size:** Process up to {batch_size} items.
+- **Total items:** {total}
 - **CLI binary:** `ai-wiki --config {config_path}`
 
 ## Instructions
@@ -167,10 +167,10 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
 
 8. **Print progress** for each item:
    ```
-   [N/{batch_size}] <filename> ... done (created X pages)
+   [N/{total}] <filename> ... done (created X pages)
    ```
 
-9. **Repeat** until you've processed {batch_size} items or the queue is empty.
+9. **Repeat** until the queue is empty.
 
 ## Important Rules
 
@@ -185,7 +185,7 @@ Begin processing now.
         config_path = "ai-wiki.toml",
         wiki_dir = config.paths.wiki_dir.display(),
         processed_dir = config.paths.processed_dir.display(),
-        batch_size = batch_size,
+        total = total,
         today = chrono::Utc::now().format("%Y-%m-%d"),
     )
 }
@@ -202,7 +202,7 @@ mod tests {
         assert!(prompt.contains("ai-wiki --config ai-wiki.toml queue claim"));
         assert!(prompt.contains("ai-wiki --config ai-wiki.toml queue complete"));
         assert!(prompt.contains("ai-wiki --config ai-wiki.toml queue error"));
-        assert!(prompt.contains("Process up to 5 items"));
+        assert!(prompt.contains("**Total items:** 5"));
         assert!(prompt.contains(&config.paths.wiki_dir.display().to_string()));
         assert!(prompt.contains(&config.paths.processed_dir.display().to_string()));
         // Verify date format YYYY-MM-DD appears
