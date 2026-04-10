@@ -1,27 +1,170 @@
 # Application
-The application suite has several parts. There is a single command line application that directs to subfunctions, based on the command line interface command.
 
-## Ingest
-These command variants cause ingestion of files:
-1. `app ingest <filename>`
-2. `app ingest <filespec>`
-3. `app ingest <directory>`
-In each case, the files matching the filename or the filespec or all files in a directory are ingested.
+The application suite is a Cargo workspace with four crates. A single `ai-wiki` CLI binary handles all user-facing operations via subcommands.
 
-## Terminal user interface
-This command displays a terminal user interface:
-`app tui`
-The display shows one line per high-level ingestion activity. If an ingeted file had parts, then those parts are show as expanadble items below the main item.
+## CLI: `ai-wiki`
 
-For example, if a top-level file for ingestion is a ZIP file, then the items within the ZIP file each have entries for below the ZIP file for their ingestion.
+```
+ai-wiki [--config <path>] <command>
+```
 
-Or if the top-level file is a PDF that is a book with a table of contents, then the chapters are each given ingestion entries.
+The `--config` flag (default: `ai-wiki.toml`) points to the TOML config file. On first run, a default config is created automatically.
 
-Lines in the TUI show:
-- item name (file name for most things; book+chapter name for a chapter in a book)
-- start datetime of ingestion
-- status of ingestion (queued, in-progress, complete, rejected)
-- link to finished page
+### `ai-wiki ingest <path>`
 
-## Other parts
-There will be other parts added as they are designed.
+Reads source files, classifies them by type, extracts text, and adds items to the processing queue. No LLM is involved — this is pure Rust preprocessing.
+
+The `<path>` argument accepts:
+1. **Single file**: `ai-wiki ingest ~/Downloads/paper.pdf`
+2. **Directory**: `ai-wiki ingest ~/Downloads/rust-books/` — walks all files recursively (max depth 50)
+3. **Glob pattern**: `ai-wiki ingest "~/Downloads/*.pdf"` — expanded by ai-wiki, not the shell (use quotes)
+4. **File list**: `ai-wiki ingest @my-reading-list.txt` — reads one path per line; `#` comments and blank lines are skipped; leading/trailing quotes on each path are stripped
+
+Supported file types:
+- PDF: text extracted via pdf-extract, pdftotext, or OCR. Books (with outlines and 50+ pages) are split into chapters automatically.
+- Markdown/Text: copied directly to the processed directory.
+- ZIP: extracted and each contained file processed recursively.
+- Audio/Video: audio extracted with ffmpeg, transcribed with whisper-cpp.
+- `.dmg` and other non-operative types: rejected immediately.
+
+Duplicate files (same path + parent) are detected and skipped automatically.
+
+Progress is shown per file, with a summary at the end:
+```
+[1/794] document.pdf ... queued (0.3s)
+[2/794] installer.dmg ... rejected (0.0s)
+Ingest complete — queued: 500, rejected: 12, errors: 3, skipped: 279, failed: 0 (4m 23s)
+```
+
+### `ai-wiki process`
+
+Invokes the Claude CLI to process every queued item in the database. Claude reads each item's extracted text, identifies entities, concepts, and claims, creates wiki pages with YAML frontmatter and `[[wikilinks]]`, updates the index and log, and marks items complete.
+
+Requires the `claude` CLI to be installed and on PATH. Runs with `--dangerously-skip-permissions` — only process documents you trust.
+
+Book parents (items with chapters) are summarized from their children's processed text.
+
+### `ai-wiki tui`
+
+Opens a terminal UI showing all queue items with color-coded status:
+- Gray: queued
+- Yellow: in progress
+- Green: complete
+- Red: error/rejected
+
+Keyboard controls:
+- `↑`/`↓` — navigate items
+- `Enter` — view details (error message, rejection reason, or wiki page content)
+- `R` — retry an errored/rejected item (requeue it)
+- `r` — force refresh
+- `q`/`Esc` — quit
+
+### `ai-wiki retry`
+
+Requeues errored items that have extracted text in the processed directory, then runs `process` to have Claude build their wiki pages.
+
+This is for items where text extraction succeeded but wiki page creation failed (e.g., Claude timeout, network error). Items without processed text are left as errors — use `clear` to remove them, then re-ingest.
+
+### `ai-wiki clear`
+
+Deletes all items with `error` status from the queue database. Use this to clean up items that failed text extraction and cannot be retried without re-ingesting the original files. Also deletes errored child items of errored parents.
+
+After clearing, re-ingest the original files:
+```bash
+ai-wiki clear
+ai-wiki ingest ~/Downloads/*.pdf
+```
+
+The dedup check skips files that were already successfully processed and only picks up previously failed ones.
+
+### `ai-wiki queue <subcommand>`
+
+Low-level queue operations used by the Claude process prompt. Not typically called by users directly.
+
+#### `ai-wiki queue claim`
+
+Atomically claim the next queued item and print its details as tab-separated fields:
+```
+<ID>\t<file_path>\t<file_type>\t<parent_id_or_none>
+```
+Prints `EMPTY` if the queue is exhausted.
+
+#### `ai-wiki queue complete <ID> <wiki_page_path>`
+
+Mark an in-progress item as complete, recording the relative path to the created wiki page.
+
+#### `ai-wiki queue error <ID> <message>`
+
+Mark an item as errored with a descriptive message.
+
+## TUI Detail View
+
+Pressing `Enter` on a terminal-state item shows:
+- **Errors**: the error message and stack trace
+- **Rejected**: the rejection reason
+- **Complete**: the full wiki page content (read from the wiki directory)
+
+## Utility: `pdf-dump`
+
+Diagnostic tool for inspecting how a PDF will be split into chapters.
+
+```bash
+cargo run -p pdf-dump -- ~/Downloads/some-book.pdf
+```
+
+Output:
+1. File path and page count
+2. TOC parsing warnings (if any)
+3. Chapter split blocks — how the book would be divided (top-level outline entries only, with start/end page numbers and page span)
+4. Classification verdict: BOOK (would split) or SIMPLE (too few pages)
+
+Useful for understanding why a particular PDF was or was not split, or for diagnosing issues with PDF bookmark structure.
+
+## MCP Server: `ai-wiki-mcp`
+
+Long-running process connected to Claude Code via `claude mcp add`. Exposes 11 MCP tools for LLM-driven wiki building without the subprocess approach.
+
+### Queue Tools
+- `get_next_item` — claim the next queued item (marks it `in_progress`), returns JSON
+- `complete_item(id, wiki_page_path)` — mark item complete; returns whether all siblings are done
+- `reject_item(id, reason)` — mark item rejected
+- `error_item(id, message)` — mark item errored
+- `list_items(status?)` — list queue items, optionally filtered by status
+
+### Source Tools
+- `read_source(id)` — read preprocessed text from `processed/<id>.txt`
+
+### Wiki Tools
+- `read_page(path)` — read a wiki page by relative path
+- `write_page(path, content)` — create or overwrite a wiki page
+- `list_pages(directory?)` — list pages, optionally within a subdirectory
+- `read_index` — read current `index.md`
+- `update_index(entry)` — append an entry to `index.md`
+- `append_log(entry)` — append a timestamped entry to `log.md`
+
+## Library: `ai-wiki-core`
+
+Shared library crate providing:
+- `config` — TOML config loading/saving, validation, path helpers
+- `queue` — SQLite-backed job queue with WAL mode, atomic claim, status transitions
+- `preprocessing` — file type detection, PDF classification/splitting/extraction, ZIP extraction, audio/video transcription
+- `wiki` — wiki file read/write operations, index and log management
+
+## Workspace Structure
+
+```
+ai-wiki/
+├── crates/
+│   ├── ai-wiki-core/     # Library: config, queue, preprocessing, wiki operations
+│   ├── ai-wiki/          # CLI binary: ingest, tui, process, retry, clear, queue
+│   ├── ai-wiki-mcp/      # MCP server: 11 tools for Claude Code integration
+│   └── pdf-dump/         # Diagnostic utility for PDF inspection
+├── docs/
+│   ├── design/           # Design documents
+│   └── superpowers/      # Implementation plans and review findings
+├── wiki/                 # Generated Obsidian vault
+├── processed/            # Extracted text files
+├── raw/                  # Split PDFs and extracted ZIPs
+├── ai-wiki.toml          # Configuration
+└── justfile              # Task runner recipes
+```

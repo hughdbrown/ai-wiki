@@ -15,17 +15,17 @@ Three-layer system (raw sources, wiki, schema) plus the application that operate
 
 ### Crate Structure
 
-Cargo workspace with three crates:
+Cargo workspace with four crates:
 
 ```
 ai-wiki/
 ├── Cargo.toml              # workspace root
 ├── crates/
 │   ├── ai-wiki-core/       # library — all domain logic
-│   ├── ai-wiki/            # CLI binary — ingest + TUI
-│   └── ai-wiki-mcp/        # MCP server binary
-├── raw/                    # source files (configurable path)
-│   └── assets/             # downloaded images
+│   ├── ai-wiki/            # CLI binary — ingest, tui, process, retry, clear, queue
+│   ├── ai-wiki-mcp/        # MCP server binary
+│   └── pdf-dump/           # diagnostic utility for PDF chapter inspection
+├── raw/                    # split PDFs and extracted ZIPs (configurable path)
 └── wiki/                   # Obsidian vault (configurable path)
     ├── index.md
     ├── log.md
@@ -35,6 +35,8 @@ ai-wiki/
     ├── claims/
     └── sources/
 ```
+
+**Deviation from spec:** The spec planned three crates. A fourth crate (`pdf-dump`) was added as a diagnostic utility for inspecting PDF chapter splitting behavior.
 
 ## Library Crate: `ai-wiki-core`
 
@@ -54,12 +56,17 @@ Job queue backed by SQLite.
 File inspection and preparation. No LLM calls.
 
 - **File type detection**: by extension + magic bytes. Non-operative file types (`.dmg` and others) are rejected immediately and logged.
-- **PDF classifier**: inspects page count, bookmark/outline structure (via `lopdf`), metadata. Heuristics:
-  - Has TOC/outline + >50 pages = book (split into chapters)
-  - Filename or metadata matching sensitive patterns = reject (court documents, financial statements, tax returns, children's report cards)
+- **PDF classifier**: inspects page count and outline structure via `lopdf`'s `get_toc()` method. Heuristics:
+  - Has TOC with at least one level-1 entry + `book_min_pages` (default 50) pages = book (split into chapters)
+  - Filename matching sensitive patterns = reject (court documents, financial statements, tax returns)
   - Otherwise = simple PDF, ingest as-is
-- **PDF splitter**: extracts chapter boundaries from bookmarks, splits via `qpdf` CLI. Each chapter enqueued as a child item. When all child chapters of a book are complete, the parent book item triggers creation of a book summary page linking to all chapter pages.
-- **PDF text extraction**: `pdf-extract` for embedded text. Falls back to `pdftotext` (poppler) for PDFs with unusual encodings, then to `tesseract` OCR for scanned PDFs (no extractable text). Preprocessed text is written to a `processed/` directory alongside the queue database, keyed by queue item ID.
+  - **Deviation from spec:** `get_toc()` is used instead of raw outline inspection. This properly resolves titles, page numbers, and nesting levels. Only top-level (level 1) entries are used for splitting — sub-sections are ignored to avoid over-fragmenting the book.
+- **PDF splitter**: extracts chapter boundaries from top-level bookmark entries, splits via `qpdf` CLI. Each chapter enqueued as a child item of the book parent.
+- **PDF text extraction**: Three-stage fallback chain:
+  1. `pdf-extract` Rust crate for embedded text. **Deviation from spec:** Wrapped in `std::panic::catch_unwind` because the upstream cff-parser crate can panic on malformed PDFs with CFF font encoding issues.
+  2. `pdftotext` (poppler) CLI as fallback for unusual encodings or empty pdf-extract results.
+  3. `pdftoppm` + `tesseract` OCR for scanned PDFs (no extractable text). Renders pages to PPM images, OCRs each page, concatenates results.
+  - Preprocessed text written to `processed/<id>.txt`, keyed by queue item ID.
 - **ZIP extractor**: unpacks archive, enqueues each contained file as a child item
 - **Audio/video**: shells out to `ffmpeg` to extract audio from MP4/MKV, then `whisper-cpp` for transcription to markdown
 
@@ -87,53 +94,78 @@ Application configuration loaded from a TOML file.
 
 ## CLI Binary: `ai-wiki`
 
-Two subcommands via `clap`:
+Six subcommands via `clap`:
 
 ### `ai-wiki ingest <path>`
 
-- `<path>`: a file, glob pattern (expanded by the application via the `glob` crate, not shell expansion), or directory
+- `<path>`: a file, glob pattern (expanded by the application via the `glob` crate, not shell expansion), directory, or `@filelist`
+- **Deviation from spec:** Added `@filelist` support: prefix with `@` to read a list of file paths (one per line, `#` comments skipped, quoted paths supported).
 - Walks the path, runs preprocessing on each file (classify, split, extract)
 - Enqueues items into SQLite with appropriate status and parent linkage
 - Does **not** call the LLM — only prepares the queue
-- Prints summary: N items queued, N rejected, N errors
+- Prints per-file progress and a final summary: N queued, N rejected, N errors, N skipped, N failed
 
 ### `ai-wiki tui`
 
 - Terminal UI via `ratatui` + `crossterm`
-- Displays queue items with columns: filename, type, status, started at, parent, wiki page link (when complete)
-- Expandable rows for compound items (ZIP contents, book chapters)
-- Color-coded status: gray=queued, yellow=in-progress, green=complete, red=rejected/error
+- Displays queue items with color-coded status: gray=queued, yellow=in-progress, green=complete, red=rejected/error
 - Auto-refreshes by polling SQLite
-- Read-only monitoring view
+- Press `Enter` to view item details (error message, rejection reason, or wiki page content)
+- Press `R` to requeue an errored/rejected item
+- **Deviation from spec:** No expandable rows for child items — all items shown in a flat list.
+
+### `ai-wiki process`
+
+**New command (not in original spec).** Invokes the Claude CLI to process all queued items.
+- Builds a prompt with instructions for Claude to use the `queue` subcommands
+- Launches `claude --print --dangerously-skip-permissions` with the prompt on stdin
+- Path injection guard: validates that config paths contain only safe characters before embedding in prompt
+
+### `ai-wiki retry`
+
+**New command (not in original spec).** Requeues errored items that have processed text available, then runs `process`.
+
+### `ai-wiki clear`
+
+**New command (not in original spec).** Deletes all errored items from the queue database (and their errored children). Use when text extraction failed and items need to be re-ingested.
+
+### `ai-wiki queue <subcommand>`
+
+**New command (not in original spec).** Low-level queue operations used by the Claude prompt:
+- `claim` — atomically claim the next queued item, print tab-delimited details
+- `complete <ID> <wiki_page_path>` — mark item complete
+- `error <ID> <message>` — mark item errored
 
 ## MCP Server: `ai-wiki-mcp`
 
-Long-running process connected to Claude Code via `claude mcp add`. Exposes tools for LLM-driven wiki building.
+Long-running process connected to Claude Code via `claude mcp add`. Exposes 11 MCP tools for LLM-driven wiki building. Uses the `rmcp` crate (not the originally planned custom implementation).
 
-### Queue Tools
+### Queue Tools (5)
 
-- `get_next_item` — returns next `queued` item (path, type, parent info), marks it `in_progress`
-- `complete_item(id, wiki_page_path)` — marks item `complete`, records the primary wiki page created for this source
+- `get_next_item` — returns next `queued` item as JSON, marks it `in_progress`
+- `complete_item(id, wiki_page_path)` — marks item `complete`; returns whether all siblings are done
 - `reject_item(id, reason)` — marks item `rejected` with explanation
 - `error_item(id, message)` — marks item `error`
 - `list_items(status?)` — list queue items, optionally filtered by status
 
-### Source Tools
+### Source Tools (1)
 
-- `read_source(id)` — returns preprocessed text content from the `processed/` directory (extracted PDF text, markdown content, transcription output)
+- `read_source(id)` — returns preprocessed text from `processed/<id>.txt`; verifies item exists in queue first
 
-### Wiki Tools
+### Wiki Tools (5)
 
-- `read_page(path)` — read an existing wiki page
+- `read_page(path)` — read an existing wiki page by relative path
 - `write_page(path, content)` — create or overwrite a wiki page
 - `list_pages(directory?)` — list pages, optionally within a subdirectory
 - `read_index` — read current `index.md`
-- `update_index(entry)` — add or update an entry in `index.md`
-- `append_log(entry)` — append a timestamped entry to `log.md`
+- `update_index(entry)` — append an entry to `index.md`
+- `append_log(entry)` — append a timestamped entry to `log.md` with `## [YYYY-MM-DD]` prefix
 
-### LLM Workflow
+**Note:** `read_index` and `append_log` are implemented but count toward the 11 — `update_index` and `append_log` are separate tools (spec counted `update_index` and `append_log` separately, which is correct).
 
-From Claude Code's perspective, processing one source:
+**Deviation from spec:** The spec listed `update_index(entry)` as adding/updating entries. The implementation only appends — there is no update-in-place of existing entries.
+
+### LLM Workflow (unchanged from spec)
 
 1. `get_next_item` — receive a source to process
 2. `read_source` — read its content

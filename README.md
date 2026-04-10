@@ -78,9 +78,10 @@ cd ai-wiki
 cargo build --release
 ```
 
-The release build produces two binaries:
-- `target/release/ai-wiki` -- the CLI (ingest, TUI, process)
+The release build produces three binaries:
+- `target/release/ai-wiki` -- the CLI (ingest, tui, process, retry, clear, queue)
 - `target/release/ai-wiki-mcp` -- the MCP server (for direct Claude Code integration)
+- `target/release/pdf-dump` -- diagnostic utility for inspecting PDF chapter splitting
 
 ### Configure
 
@@ -154,7 +155,7 @@ Progress is shown for each file:
 [1/794] document.pdf ... queued (0.3s)
 [2/794] installer.dmg ... rejected (0.0s)
 [3/794] already-done.pdf ... skipped (0.0s)
-Ingest complete — queued: 500, rejected: 12, errors: 3, skipped: 279 (4m 23s)
+Ingest complete — queued: 500, rejected: 12, errors: 3, skipped: 279, failed: 0 (4m 23s)
 ```
 
 ### Phase 2: Process (LLM)
@@ -202,6 +203,37 @@ Press `Enter` on any terminal-state item to see details:
 
 Press `R` on an errored/rejected item to requeue it for retry.
 
+### Error Recovery
+
+```bash
+ai-wiki retry
+```
+
+Requeues errored items that have extracted text in the processed directory, then runs `process` to build their wiki pages. Use this when text extraction succeeded but Claude timed out or the network failed.
+
+```bash
+ai-wiki clear
+```
+
+Deletes all errored items from the queue. Use this for items where text extraction itself failed. After clearing, re-ingest the original files:
+
+```bash
+ai-wiki clear
+ai-wiki ingest ~/Downloads/*.pdf
+```
+
+The dedup check skips already-processed files and only picks up the ones that previously failed.
+
+### Queue Subcommands
+
+Low-level queue operations invoked by the Claude prompt. Not typically called by users directly.
+
+```bash
+ai-wiki queue claim               # Claim next queued item (prints tab-delimited: ID, path, type, parent)
+ai-wiki queue complete <ID> <path> # Mark item complete with wiki page path
+ai-wiki queue error <ID> <msg>    # Mark item as errored
+```
+
 ## Utilities
 
 ### pdf-dump
@@ -248,7 +280,7 @@ ai-wiki/
 ├── crates/
 │   ├── ai-wiki-core/     # Library: config, queue, preprocessing, wiki operations
 │   ├── ai-wiki/          # CLI binary: ingest, tui, process
-│   ├── ai-wiki-mcp/      # MCP server: 12 tools for Claude Code integration
+│   ├── ai-wiki-mcp/      # MCP server: 11 tools for Claude Code integration
 │   └── pdf-dump/         # Diagnostic utility for PDF inspection
 ├── docs/
 │   ├── design/           # Original design documents
@@ -265,7 +297,7 @@ ai-wiki/
 
 ```bash
 just check      # Fast compile check
-just test       # Run all 74 tests
+just test       # Run all 76 tests
 just lint        # Clippy lints
 just ci          # Full CI pipeline (check + test + lint + fmt)
 just build       # Debug build
