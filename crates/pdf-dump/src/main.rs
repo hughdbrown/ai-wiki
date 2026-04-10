@@ -88,10 +88,9 @@ fn main() -> anyhow::Result<()> {
             .map(|e| e.title.as_str())
             .unwrap_or("(unnamed)");
 
-        let display_title = if title.len() > 50 {
-            &title[..50]
-        } else {
-            title
+        let display_title = match title.char_indices().nth(50) {
+            Some((idx, _)) => &title[..idx],
+            None => title,
         };
 
         let page_span = if end >= start { end - start + 1 } else { 0 };
