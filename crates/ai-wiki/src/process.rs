@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use anyhow::Context;
@@ -6,29 +7,30 @@ use anyhow::Context;
 use ai_wiki_core::config::Config;
 use ai_wiki_core::queue::Queue;
 
-/// Characters that are unsafe to interpolate into shell commands or SQL.
-const UNSAFE_PATH_CHARS: &[char] = &['\'', '"', '`', ';', '|', '&', '$', '\\', '\n', '\r'];
-
-/// Validate that a path string contains no shell/SQL metacharacters.
+/// Validate that a path string contains only safe characters for prompt embedding.
+/// Permits alphanumerics, `.`, `_`, `/`, `-`, and space.
 fn validate_path_for_prompt(path: &str, label: &str) -> anyhow::Result<()> {
-    if let Some(c) = path.chars().find(|c| UNSAFE_PATH_CHARS.contains(c)) {
+    if let Some(c) = path
+        .chars()
+        .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '/' | '-' | ' '))
+    {
         anyhow::bail!(
             "{label} path contains unsafe character {c:?}: {path}\n\
-             Rename the path to remove shell/SQL metacharacters."
+             Rename the path to remove shell metacharacters."
         );
     }
     Ok(())
 }
 
-pub fn run(config: &Config) -> anyhow::Result<()> {
+pub fn run(config: &Config, config_path: &Path) -> anyhow::Result<()> {
     // Validate paths before embedding them in the prompt
-    let db_path = config.paths.database_path.display().to_string();
     let wiki_dir = config.paths.wiki_dir.display().to_string();
     let processed_dir = config.paths.processed_dir.display().to_string();
+    let config_path_str = config_path.display().to_string();
 
-    validate_path_for_prompt(&db_path, "Database")?;
     validate_path_for_prompt(&wiki_dir, "Wiki directory")?;
     validate_path_for_prompt(&processed_dir, "Processed text directory")?;
+    validate_path_for_prompt(&config_path_str, "Config")?;
 
     let queue = Queue::open(&config.paths.database_path).with_context(|| {
         format!(
@@ -52,7 +54,7 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     let total = queued_count as usize;
     println!("Queue has {total} item(s). Processing all.");
 
-    let prompt = build_prompt(config, total);
+    let prompt = build_prompt(config, &config_path_str, total);
 
     eprintln!("WARNING: This will grant the Claude CLI permission to run commands on your system.");
     eprintln!("Source documents may contain prompt injection attacks that could lead to");
@@ -103,7 +105,7 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_prompt(config: &Config, total: usize) -> String {
+fn build_prompt(config: &Config, config_path: &str, total: usize) -> String {
     format!(
         r#"You are processing source documents from an ai-wiki queue into an Obsidian wiki.
 
@@ -122,8 +124,8 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
    ```bash
    ai-wiki --config {config_path} queue claim
    ```
-   This atomically claims the oldest queued item and prints its details as:
-   `<ID>|<file_path>|<file_type>|<parent_id_or_none>`
+   This atomically claims the oldest queued item and prints its details as tab-separated fields:
+   `<ID>\t<file_path>\t<file_type>\t<parent_id_or_none>`
    If the output is `EMPTY`, the queue is exhausted — stop processing.
 
 2. **Read the processed text** from `{processed_dir}/<ID>.txt`. If the file doesn't exist:
@@ -182,7 +184,7 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
 
 Begin processing now.
 "#,
-        config_path = "ai-wiki.toml",
+        config_path = config_path,
         wiki_dir = config.paths.wiki_dir.display(),
         processed_dir = config.paths.processed_dir.display(),
         total = total,
@@ -197,11 +199,11 @@ mod tests {
     #[test]
     fn test_build_prompt_contains_expected_values() {
         let config = Config::default();
-        let prompt = build_prompt(&config, 5);
+        let prompt = build_prompt(&config, "my-config.toml", 5);
 
-        assert!(prompt.contains("ai-wiki --config ai-wiki.toml queue claim"));
-        assert!(prompt.contains("ai-wiki --config ai-wiki.toml queue complete"));
-        assert!(prompt.contains("ai-wiki --config ai-wiki.toml queue error"));
+        assert!(prompt.contains("ai-wiki --config my-config.toml queue claim"));
+        assert!(prompt.contains("ai-wiki --config my-config.toml queue complete"));
+        assert!(prompt.contains("ai-wiki --config my-config.toml queue error"));
         assert!(prompt.contains("**Total items:** 5"));
         assert!(prompt.contains(&config.paths.wiki_dir.display().to_string()));
         assert!(prompt.contains(&config.paths.processed_dir.display().to_string()));
@@ -216,10 +218,16 @@ mod tests {
     fn test_validate_path_rejects_unsafe_chars() {
         assert!(validate_path_for_prompt("/normal/path", "test").is_ok());
         assert!(validate_path_for_prompt("/path with spaces/ok", "test").is_ok());
+        assert!(validate_path_for_prompt("/path-with_dots.toml", "test").is_ok());
         assert!(validate_path_for_prompt("/path'with/quote", "test").is_err());
         assert!(validate_path_for_prompt("/path;semicolon", "test").is_err());
         assert!(validate_path_for_prompt("/path`backtick", "test").is_err());
         assert!(validate_path_for_prompt("/path|pipe", "test").is_err());
         assert!(validate_path_for_prompt("/path$var", "test").is_err());
+        assert!(validate_path_for_prompt("/path(parens)", "test").is_err());
+        assert!(validate_path_for_prompt("/path{braces}", "test").is_err());
+        assert!(validate_path_for_prompt("/path<angle>", "test").is_err());
+        assert!(validate_path_for_prompt("/path!bang", "test").is_err());
+        assert!(validate_path_for_prompt("/path#hash", "test").is_err());
     }
 }

@@ -3,7 +3,7 @@ mod process;
 mod tui;
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -145,14 +145,15 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Ingest { path } => ingest::run(&config, &path),
         Commands::Tui => tui::run(&config),
-        Commands::Process => process::run(&config),
-        Commands::Retry => retry(&config),
+        Commands::Process => process::run(&config, &cli.config),
+        Commands::Retry => retry(&config, &cli.config),
+
         Commands::Clear => clear(&config),
         Commands::Queue(cmd) => queue_cmd(&config, cmd),
     }
 }
 
-fn retry(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
+fn retry(config: &ai_wiki_core::config::Config, config_path: &Path) -> anyhow::Result<()> {
     let queue = ai_wiki_core::queue::Queue::open(&config.paths.database_path)?;
 
     let error_items = queue.list_items(Some(&ai_wiki_core::queue::ItemStatus::Error))?;
@@ -175,7 +176,7 @@ fn retry(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
     if retried > 0 {
         println!("Running process to build wiki pages...");
         println!();
-        process::run(config)?;
+        process::run(config, config_path)?;
     }
 
     Ok(())
@@ -213,7 +214,7 @@ fn queue_cmd(config: &ai_wiki_core::config::Config, cmd: QueueCommands) -> anyho
             match queue.claim_next_queued()? {
                 Some(item) => {
                     println!(
-                        "{}|{}|{}|{}",
+                        "{}\t{}\t{}\t{}",
                         item.id,
                         item.file_path.display(),
                         item.file_type.as_str(),
