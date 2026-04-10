@@ -30,28 +30,40 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, queue);
+    let result = run_app(&mut terminal, queue, config);
 
     // Restore terminal (normal exit path)
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    // Restore original panic hook (since our hook captures stdout)
+    // Restore original panic hook
     let _ = std::panic::take_hook();
 
     result
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, queue: Queue) -> anyhow::Result<()> {
+/// Whether we're showing the main table or a detail overlay.
+enum View {
+    Table,
+    Detail(QueueItem),
+}
+
+fn run_app<B: Backend>(
+    terminal: &mut Terminal<B>,
+    queue: Queue,
+    config: &Config,
+) -> anyhow::Result<()> {
     let mut table_state = TableState::default();
     let mut items: Vec<QueueItem> = vec![];
     let mut counts: Vec<(String, u64)> = vec![];
-    let mut last_refresh = Instant::now() - Duration::from_secs(3); // force immediate refresh
+    let mut last_refresh = Instant::now() - Duration::from_secs(3);
+    let mut view = View::Table;
+    let mut detail_scroll: u16 = 0;
 
     loop {
-        // Refresh data every 2 seconds
-        if last_refresh.elapsed() >= Duration::from_secs(2) {
+        // Refresh data every 2 seconds (only in table view)
+        if matches!(view, View::Table) && last_refresh.elapsed() >= Duration::from_secs(2) {
             items = queue
                 .list_items(None)
                 .map_err(|e| anyhow::anyhow!("failed to list items: {}", e))?;
@@ -60,7 +72,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, queue: Queue) -> anyhow::Resu
                 .map_err(|e| anyhow::anyhow!("failed to count by status: {}", e))?;
             last_refresh = Instant::now();
 
-            // Clamp selection to valid range
             if let Some(sel) = table_state.selected() {
                 if items.is_empty() {
                     table_state.select(None);
@@ -70,46 +81,105 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, queue: Queue) -> anyhow::Resu
             }
         }
 
-        terminal.draw(|f| draw(f, &items, &counts, &mut table_state))?;
+        terminal.draw(|f| match &view {
+            View::Table => draw_table(f, &items, &counts, &mut table_state),
+            View::Detail(item) => draw_detail(f, item, config, detail_scroll),
+        })?;
 
-        // Poll for events with 250ms timeout for responsiveness
         if event::poll(Duration::from_millis(250))?
             && let Event::Key(key) = event::read()?
         {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                KeyCode::Char('r') => {
-                    // Force immediate refresh
-                    last_refresh = Instant::now() - Duration::from_secs(3);
-                }
-                KeyCode::Up => {
-                    let sel = match table_state.selected() {
-                        Some(0) | None => 0,
-                        Some(i) => i - 1,
-                    };
-                    if !items.is_empty() {
-                        table_state.select(Some(sel));
+            match &view {
+                View::Table => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('r') => {
+                        last_refresh = Instant::now() - Duration::from_secs(3);
                     }
-                }
-                KeyCode::Down => {
-                    if !items.is_empty() {
+                    KeyCode::Up => {
                         let sel = match table_state.selected() {
-                            None => 0,
-                            Some(i) => (i + 1).min(items.len() - 1),
+                            Some(0) | None => 0,
+                            Some(i) => i - 1,
                         };
-                        table_state.select(Some(sel));
+                        if !items.is_empty() {
+                            table_state.select(Some(sel));
+                        }
                     }
-                }
-                _ => {}
+                    KeyCode::Down => {
+                        if !items.is_empty() {
+                            let sel = match table_state.selected() {
+                                None => 0,
+                                Some(i) => (i + 1).min(items.len() - 1),
+                            };
+                            table_state.select(Some(sel));
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(sel) = table_state.selected() {
+                            if let Some(item) = items.get(sel) {
+                                // Only open detail for terminal states
+                                match item.status {
+                                    ItemStatus::Complete
+                                    | ItemStatus::Error
+                                    | ItemStatus::Rejected => {
+                                        detail_scroll = 0;
+                                        view = View::Detail(item.clone());
+                                    }
+                                    _ => {} // no action for queued/in_progress
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Char('R') => {
+                        // Retry: requeue errored/rejected item from table view
+                        if let Some(sel) = table_state.selected() {
+                            if let Some(item) = items.get(sel) {
+                                if matches!(
+                                    item.status,
+                                    ItemStatus::Error | ItemStatus::Rejected
+                                ) {
+                                    let _ = queue.requeue_item(item.id);
+                                    last_refresh =
+                                        Instant::now() - Duration::from_secs(3);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                View::Detail(item) => match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                        view = View::Table;
+                        last_refresh = Instant::now() - Duration::from_secs(3);
+                    }
+                    KeyCode::Char('R') => {
+                        if matches!(
+                            item.status,
+                            ItemStatus::Error | ItemStatus::Rejected
+                        ) {
+                            let _ = queue.requeue_item(item.id);
+                            view = View::Table;
+                            last_refresh = Instant::now() - Duration::from_secs(3);
+                        }
+                    }
+                    KeyCode::Up => {
+                        detail_scroll = detail_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        detail_scroll = detail_scroll.saturating_add(1);
+                    }
+                    _ => {}
+                },
             }
         }
     }
 }
 
-fn draw(
+// ─── Table View ──────────────────────────────────────────────────────────────
+
+fn draw_table(
     f: &mut Frame,
     items: &[QueueItem],
     counts: &[(String, u64)],
@@ -124,7 +194,7 @@ fn draw(
         ])
         .split(f.area());
 
-    // ── Status bar ────────────────────────────────────────────────────────────
+    // Status bar
     let status_text = format_counts(counts);
     let status_block = Block::default().borders(Borders::ALL).title("Queue Status");
     let status_para = Paragraph::new(status_text)
@@ -132,18 +202,10 @@ fn draw(
         .style(Style::default().fg(Color::White));
     f.render_widget(status_para, chunks[0]);
 
-    // ── Queue table ───────────────────────────────────────────────────────────
-    let header_cells = [
-        "ID",
-        "File",
-        "Type",
-        "Status",
-        "Started",
-        "Parent",
-        "Wiki Page",
-    ]
-    .iter()
-    .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).bold()));
+    // Queue table
+    let header_cells = ["ID", "File", "Type", "Status", "Started", "Parent", "Wiki Page"]
+        .iter()
+        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).bold()));
     let header = Row::new(header_cells).height(1).bottom_margin(0);
 
     let rows: Vec<Row> = items
@@ -160,11 +222,8 @@ fn draw(
                 .started_at
                 .map(|dt| dt.format("%H:%M:%S").to_string())
                 .unwrap_or_default();
-
             let parent = item.parent_id.map(|id| id.to_string()).unwrap_or_default();
-
             let wiki_page = item.wiki_page_path.as_deref().unwrap_or("");
-
             let file_name = item
                 .file_path
                 .file_name()
@@ -202,10 +261,162 @@ fn draw(
 
     f.render_stateful_widget(table, chunks[1], table_state);
 
-    // ── Help line ─────────────────────────────────────────────────────────────
-    let help = Paragraph::new(" q: quit | ↑↓: scroll | r: refresh")
-        .style(Style::default().fg(Color::Cyan));
+    // Help line
+    let help =
+        Paragraph::new(" q: quit | ↑↓: scroll | Enter: details | r: refresh | R: retry errored")
+            .style(Style::default().fg(Color::Cyan));
     f.render_widget(help, chunks[2]);
+}
+
+// ─── Detail View ─────────────────────────────────────────────────────────────
+
+fn draw_detail(f: &mut Frame, item: &QueueItem, config: &Config, scroll: u16) {
+    let area = f.area();
+
+    let status_color = match &item.status {
+        ItemStatus::Complete => Color::Green,
+        ItemStatus::Error => Color::Red,
+        ItemStatus::Rejected => Color::Red,
+        _ => Color::Yellow,
+    };
+
+    let title = format!(
+        " Item {} — {} ",
+        item.id,
+        item.status.as_str().to_uppercase()
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header info
+    lines.push(Line::from(vec![
+        Span::styled("File: ", Style::default().bold()),
+        Span::raw(item.file_path.to_string_lossy().into_owned()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Type: ", Style::default().bold()),
+        Span::raw(item.file_type.as_str()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Status: ", Style::default().bold()),
+        Span::styled(item.status.as_str(), Style::default().fg(status_color)),
+    ]));
+    if let Some(parent) = item.parent_id {
+        lines.push(Line::from(vec![
+            Span::styled("Parent ID: ", Style::default().bold()),
+            Span::raw(parent.to_string()),
+        ]));
+    }
+    if let Some(ref wp) = item.wiki_page_path {
+        lines.push(Line::from(vec![
+            Span::styled("Wiki Page: ", Style::default().bold()),
+            Span::raw(wp.clone()),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Created: ", Style::default().bold()),
+        Span::raw(item.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
+    ]));
+    if let Some(dt) = item.started_at {
+        lines.push(Line::from(vec![
+            Span::styled("Started: ", Style::default().bold()),
+            Span::raw(dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+        ]));
+    }
+    if let Some(dt) = item.completed_at {
+        lines.push(Line::from(vec![
+            Span::styled("Completed: ", Style::default().bold()),
+            Span::raw(dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "─".repeat(area.width.saturating_sub(4) as usize),
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
+
+    // Status-specific content
+    match &item.status {
+        ItemStatus::Error => {
+            lines.push(Line::from(Span::styled(
+                "ERROR DETAILS",
+                Style::default().fg(Color::Red).bold(),
+            )));
+            lines.push(Line::from(""));
+            if let Some(ref msg) = item.error_message {
+                for line in msg.lines() {
+                    lines.push(Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(Color::Red),
+                    )));
+                }
+            } else {
+                lines.push(Line::from("No error message recorded."));
+            }
+        }
+        ItemStatus::Rejected => {
+            lines.push(Line::from(Span::styled(
+                "REJECTION REASON",
+                Style::default().fg(Color::Red).bold(),
+            )));
+            lines.push(Line::from(""));
+            if let Some(ref msg) = item.error_message {
+                for line in msg.lines() {
+                    lines.push(Line::from(line.to_string()));
+                }
+            } else {
+                lines.push(Line::from("No rejection reason recorded."));
+            }
+        }
+        ItemStatus::Complete => {
+            lines.push(Line::from(Span::styled(
+                "SOURCE SUMMARY",
+                Style::default().fg(Color::Green).bold(),
+            )));
+            lines.push(Line::from(""));
+
+            // Try to read the wiki page content
+            if let Some(ref wiki_path) = item.wiki_page_path {
+                let full_path = config.paths.wiki_dir.join(wiki_path);
+                match std::fs::read_to_string(&full_path) {
+                    Ok(content) => {
+                        for line in content.lines() {
+                            lines.push(Line::from(line.to_string()));
+                        }
+                    }
+                    Err(e) => {
+                        lines.push(Line::from(format!(
+                            "Could not read wiki page {}: {}",
+                            wiki_path, e
+                        )));
+                    }
+                }
+            } else {
+                lines.push(Line::from("No wiki page path recorded."));
+            }
+        }
+        _ => {}
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " Esc/Enter/q: back to list | ↑↓: scroll",
+        Style::default().fg(Color::Cyan),
+    )));
+
+    let para = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .title_style(Style::default().fg(status_color).bold()),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+
+    f.render_widget(para, area);
 }
 
 fn format_counts(counts: &[(String, u64)]) -> String {

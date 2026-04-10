@@ -274,6 +274,23 @@ impl Queue {
         Ok(rows as u64)
     }
 
+    /// Reset a single errored or rejected item back to queued for retry.
+    pub fn requeue_item(&self, id: i64) -> Result<(), QueueError> {
+        let rows = self.conn.execute(
+            "UPDATE queue_items SET status = ?1, started_at = NULL, completed_at = NULL, error_message = NULL WHERE id = ?2 AND status IN (?3, ?4)",
+            params![
+                ItemStatus::Queued.as_str(),
+                id,
+                ItemStatus::Error.as_str(),
+                ItemStatus::Rejected.as_str(),
+            ],
+        )?;
+        if rows == 0 {
+            return Err(self.not_found_or_transition(id, "error or rejected")?);
+        }
+        Ok(())
+    }
+
     // ─── Read operations ──────────────────────────────────────────────────────
 
     /// Retrieve a single item by its id.
