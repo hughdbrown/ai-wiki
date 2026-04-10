@@ -16,6 +16,14 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     let queue = Queue::open(&config.paths.database_path)
         .map_err(|e| anyhow::anyhow!("failed to open queue: {}", e))?;
 
+    // Install panic hook to restore terminal on crash
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        original_hook(info);
+    }));
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -24,9 +32,13 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
 
     let result = run_app(&mut terminal, queue);
 
+    // Restore terminal (normal exit path)
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+
+    // Restore original panic hook (since our hook captures stdout)
+    let _ = std::panic::take_hook();
 
     result
 }
