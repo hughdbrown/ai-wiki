@@ -6,8 +6,7 @@ use lopdf::Document;
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: pdf-dump <file.pdf>");
-        std::process::exit(1);
+        anyhow::bail!("Usage: pdf-dump <file.pdf>");
     }
 
     let path = Path::new(&args[1]);

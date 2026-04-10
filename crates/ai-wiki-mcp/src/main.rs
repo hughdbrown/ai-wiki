@@ -839,6 +839,10 @@ async fn main() -> Result<()> {
     let config = if config_path.exists() {
         Config::load(&config_path)?
     } else {
+        eprintln!(
+            "Warning: config file not found at {}, using defaults",
+            config_path.display()
+        );
         Config::default()
     };
     config.validate()?;

@@ -9,12 +9,14 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
+use anyhow::Context;
+
 use ai_wiki_core::config::Config;
 use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 
 pub fn run(config: &Config) -> anyhow::Result<()> {
     let queue = Queue::open(&config.paths.database_path)
-        .map_err(|e| anyhow::anyhow!("failed to open queue: {}", e))?;
+        .with_context(|| format!("failed to open queue at {}", config.paths.database_path.display()))?;
 
     // Install panic hook to restore terminal on crash
     let original_hook = std::panic::take_hook();
@@ -193,7 +195,7 @@ fn run_app<B: Backend>(
                         detail_scroll = detail_scroll.saturating_sub(1);
                     }
                     KeyCode::Down => {
-                        detail_scroll = detail_scroll.saturating_add(1);
+                        detail_scroll = detail_scroll.saturating_add(1).min(500);
                     }
                     _ => {}
                 },

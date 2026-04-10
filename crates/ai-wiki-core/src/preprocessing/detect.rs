@@ -33,8 +33,15 @@ pub fn detect_file_type(path: &Path, config: &Config) -> FileClassification {
         .unwrap_or("")
         .to_lowercase();
 
-    for pattern in &config.rejection.sensitive_filename_patterns {
-        if filename.contains(&pattern.to_lowercase()) {
+    let lower_patterns: Vec<String> = config
+        .rejection
+        .sensitive_filename_patterns
+        .iter()
+        .map(|p| p.to_lowercase())
+        .collect();
+
+    for pattern in &lower_patterns {
+        if filename.contains(pattern.as_str()) {
             return FileClassification::Rejected(format!("sensitive filename pattern: {pattern}"));
         }
     }

@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use lopdf::Document;
@@ -157,21 +156,15 @@ pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> 
     }
 }
 
-static OCR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 // OCR fallback: render pages to images, then tesseract each
 fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
-    let temp_dir = std::env::temp_dir().join(format!(
-        "ai_wiki_ocr_{}_{}",
-        std::process::id(),
-        OCR_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&temp_dir)?;
+    let temp_dir =
+        tempfile::tempdir().context("failed to create temp directory for OCR")?;
 
     let path_str = path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))?;
-    let page_prefix = temp_dir.join("page");
+    let page_prefix = temp_dir.path().join("page");
     let page_prefix_str = page_prefix.to_str().ok_or_else(|| {
         anyhow::anyhow!(
             "temp dir path is not valid UTF-8: {}",
@@ -188,51 +181,26 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
     )?;
 
     if !status.success() {
-        let _ = std::fs::remove_dir_all(&temp_dir);
         anyhow::bail!("pdftoppm failed for {}", path.display());
     }
 
     // Find generated page images and OCR each
+    let mut pages: Vec<_> = std::fs::read_dir(temp_dir.path())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "ppm"))
+        .collect();
+    pages.sort();
+
     let mut full_text = String::new();
-    let pages_result: anyhow::Result<Vec<_>> = (|| {
-        let mut pages: Vec<_> = std::fs::read_dir(&temp_dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|ext| ext == "ppm"))
-            .collect();
-        pages.sort();
-        Ok(pages)
-    })();
-
-    let pages = match pages_result {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            return Err(e);
-        }
-    };
-
     for page_img in &pages {
-        let page_img_str = match page_img.to_str() {
-            Some(s) => s,
-            None => {
-                let _ = std::fs::remove_dir_all(&temp_dir);
-                return Err(anyhow::anyhow!(
-                    "page image path is not valid UTF-8: {}",
-                    page_img.display()
-                ));
-            }
-        };
-        let output = match super::run_tool_output(
+        let page_img_str = page_img
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("page image path is not valid UTF-8: {}", page_img.display()))?;
+        let output = super::run_tool_output(
             Command::new(&config.tools.tesseract_path).args([page_img_str, "stdout"]),
             "tesseract",
-        ) {
-            Ok(o) => o,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&temp_dir);
-                return Err(e);
-            }
-        };
+        )?;
 
         if output.status.success() {
             full_text.push_str(&String::from_utf8_lossy(&output.stdout));
@@ -240,8 +208,7 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
         }
     }
 
-    // Cleanup temp dir (success path)
-    let _ = std::fs::remove_dir_all(&temp_dir);
+    // temp_dir auto-cleans up on drop
 
     if full_text.trim().is_empty() {
         anyhow::bail!("OCR produced no text for {}", path.display());

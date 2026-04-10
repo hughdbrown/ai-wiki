@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -106,7 +107,6 @@ impl Wiki {
             .append(true)
             .open(&path)
             .map_err(|e| anyhow::anyhow!("Failed to open {}: {}", path.display(), e))?;
-        use std::io::Write;
         writeln!(file, "{}", entry)
             .map_err(|e| anyhow::anyhow!("Failed to append to {}: {}", path.display(), e))?;
         Ok(())
@@ -120,7 +120,6 @@ impl Wiki {
             .append(true)
             .open(&path)
             .map_err(|e| anyhow::anyhow!("Failed to open {}: {}", path.display(), e))?;
-        use std::io::Write;
         writeln!(file, "## [{date}] {entry}")
             .map_err(|e| anyhow::anyhow!("Failed to append to {}: {}", path.display(), e))?;
         Ok(())
