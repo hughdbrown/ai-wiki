@@ -52,6 +52,7 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
     let mut totals = IngestResult::default();
     let ingest_start = std::time::Instant::now();
 
+    let mut skipped: usize = 0;
     for (i, file) in files.iter().enumerate() {
         let file_name = file
             .file_name()
@@ -68,6 +69,7 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
                 } else if result.errors > 0 {
                     "error"
                 } else if result.queued == 0 {
+                    skipped += 1;
                     "skipped"
                 } else {
                     "queued"
@@ -92,7 +94,7 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
         totals.queued,
         totals.rejected,
         totals.errors,
-        total - totals.queued - totals.rejected - totals.errors
+        skipped
     );
 
     Ok(())
