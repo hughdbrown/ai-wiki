@@ -378,7 +378,17 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Strip matching leading and trailing single or double quotes from a string.
+fn strip_quotes(s: &str) -> &str {
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
 /// Read a file list (one path per line). Blank lines and lines starting with `#` are skipped.
+/// Leading/trailing quotes on each line are stripped.
 /// Relative paths are resolved from the current working directory, not the list file's location.
 fn read_file_list(list_path: &str) -> anyhow::Result<Vec<PathBuf>> {
     let content = fs::read_to_string(list_path)
@@ -388,6 +398,7 @@ fn read_file_list(list_path: &str) -> anyhow::Result<Vec<PathBuf>> {
         .lines()
         .map(|line| line.trim())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| strip_quotes(line))
         .map(PathBuf::from)
         .collect();
 
@@ -495,6 +506,43 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn test_resolve_file_list_quoted_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = dir.path().join("a.md");
+        let file_b = dir.path().join("b.txt");
+        let file_c = dir.path().join("c.rs");
+        fs::write(&file_a, "a").unwrap();
+        fs::write(&file_b, "b").unwrap();
+        fs::write(&file_c, "c").unwrap();
+
+        let list_file = dir.path().join("files.txt");
+        fs::write(
+            &list_file,
+            format!(
+                "\"{}\"\n'{}'\n{}\n",
+                file_a.display(),
+                file_b.display(),
+                file_c.display(),
+            ),
+        )
+        .unwrap();
+
+        let input = format!("@{}", list_file.display());
+        let resolved = resolve_files(&input).unwrap();
+        assert_eq!(resolved.len(), 3);
+    }
+
+    #[test]
+    fn test_strip_quotes_fn() {
+        assert_eq!(strip_quotes(r#""hello""#), "hello");
+        assert_eq!(strip_quotes("'hello'"), "hello");
+        assert_eq!(strip_quotes("hello"), "hello");
+        assert_eq!(strip_quotes(r#""hello'"#), r#""hello'"#); // mismatched, no strip
+        assert_eq!(strip_quotes(""), "");
+        assert_eq!(strip_quotes(r#""""#), ""); // empty quoted string
     }
 
     #[test]
