@@ -394,6 +394,440 @@ impl ServerHandler for WikiServer {
     }
 }
 
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    use tempfile::tempdir;
+
+    use ai_wiki_core::config::{Config, PathsConfig};
+    use ai_wiki_core::queue::{FileType, ItemStatus, Queue};
+    use ai_wiki_core::wiki::Wiki;
+
+    use super::WikiServer;
+
+    // ─── Helper ───────────────────────────────────────────────────────────────
+
+    fn make_server() -> (WikiServer, tempfile::TempDir, tempfile::TempDir) {
+        let wiki_dir = tempdir().unwrap();
+        let processed_dir = tempdir().unwrap();
+
+        let wiki = Wiki::new(wiki_dir.path().to_path_buf());
+        wiki.init().unwrap();
+
+        let queue = Queue::open_in_memory().unwrap();
+
+        let mut config = Config::default();
+        config.paths = PathsConfig {
+            raw_dir: wiki_dir.path().join("raw"),
+            wiki_dir: wiki_dir.path().to_path_buf(),
+            database_path: wiki_dir.path().join("queue.db"),
+            processed_dir: processed_dir.path().to_path_buf(),
+        };
+
+        let server = WikiServer {
+            queue: Arc::new(Mutex::new(queue)),
+            wiki: Arc::new(wiki),
+            config: Arc::new(config),
+            tool_router: WikiServer::tool_router(),
+        };
+
+        (server, wiki_dir, processed_dir)
+    }
+
+    // ─── Queue Tool Tests ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_next_item_empty_queue() {
+        let (server, _wiki_dir, _processed_dir) = make_server();
+        let result = server.get_next_item().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "null");
+    }
+
+    #[tokio::test]
+    async fn test_get_next_item_returns_item_and_marks_in_progress() {
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        // Enqueue a file first
+        {
+            let queue = server.queue.lock().unwrap();
+            queue
+                .enqueue(Path::new("docs/readme.md"), FileType::Markdown, None)
+                .unwrap();
+        }
+
+        let result = server.get_next_item().await;
+        assert!(result.is_ok());
+        let json_str = result.unwrap();
+        assert_ne!(json_str, "null");
+
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(value["status"], "in_progress");
+        assert_eq!(value["file_path"], "docs/readme.md");
+
+        // Verify item is actually marked in_progress in the queue
+        let queue = server.queue.lock().unwrap();
+        let item = queue.get_item(1).unwrap();
+        assert_eq!(item.status, ItemStatus::InProgress);
+        assert!(item.started_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_complete_item() {
+        use super::CompleteItemRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        // Enqueue and advance to in_progress
+        let id = {
+            let queue = server.queue.lock().unwrap();
+            let id = queue
+                .enqueue(Path::new("docs/test.md"), FileType::Markdown, None)
+                .unwrap();
+            queue.mark_in_progress(id).unwrap();
+            id
+        };
+
+        let result = server
+            .complete_item(Parameters(CompleteItemRequest {
+                id,
+                wiki_page_path: "entities/test.md".to_string(),
+            }))
+            .await;
+        assert!(result.is_ok(), "complete_item failed: {:?}", result);
+
+        let value: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(value["status"], "complete");
+        assert_eq!(value["id"], id);
+
+        // Verify in queue
+        let queue = server.queue.lock().unwrap();
+        let item = queue.get_item(id).unwrap();
+        assert_eq!(item.status, ItemStatus::Complete);
+        assert_eq!(item.wiki_page_path.as_deref(), Some("entities/test.md"));
+    }
+
+    #[tokio::test]
+    async fn test_reject_item() {
+        use super::RejectItemRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        let id = {
+            let queue = server.queue.lock().unwrap();
+            queue
+                .enqueue(Path::new("sensitive.pdf"), FileType::Pdf, None)
+                .unwrap()
+        };
+
+        let result = server
+            .reject_item(Parameters(RejectItemRequest {
+                id,
+                reason: "sensitive content".to_string(),
+            }))
+            .await;
+        assert!(result.is_ok(), "reject_item failed: {:?}", result);
+
+        let value: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(value["status"], "rejected");
+
+        let queue = server.queue.lock().unwrap();
+        let item = queue.get_item(id).unwrap();
+        assert_eq!(item.status, ItemStatus::Rejected);
+        assert_eq!(item.error_message.as_deref(), Some("sensitive content"));
+    }
+
+    #[tokio::test]
+    async fn test_error_item() {
+        use super::ErrorItemRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        let id = {
+            let queue = server.queue.lock().unwrap();
+            queue
+                .enqueue(Path::new("corrupt.pdf"), FileType::Pdf, None)
+                .unwrap()
+        };
+
+        let result = server
+            .error_item(Parameters(ErrorItemRequest {
+                id,
+                message: "parse failed".to_string(),
+            }))
+            .await;
+        assert!(result.is_ok(), "error_item failed: {:?}", result);
+
+        let value: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(value["status"], "error");
+
+        let queue = server.queue.lock().unwrap();
+        let item = queue.get_item(id).unwrap();
+        assert_eq!(item.status, ItemStatus::Error);
+        assert_eq!(item.error_message.as_deref(), Some("parse failed"));
+    }
+
+    #[tokio::test]
+    async fn test_list_items_with_filter() {
+        use super::ListItemsRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        // Enqueue three items; mark one in_progress and one rejected
+        let (id1, _id2, id3) = {
+            let queue = server.queue.lock().unwrap();
+            let id1 = queue
+                .enqueue(Path::new("a.md"), FileType::Markdown, None)
+                .unwrap();
+            let id2 = queue
+                .enqueue(Path::new("b.md"), FileType::Markdown, None)
+                .unwrap();
+            let id3 = queue
+                .enqueue(Path::new("c.md"), FileType::Markdown, None)
+                .unwrap();
+            queue.mark_in_progress(id1).unwrap();
+            queue.mark_rejected(id3, "not needed").unwrap();
+            (id1, id2, id3)
+        };
+        let _ = (id1, id3); // suppress unused warnings
+
+        // Filter by queued — should be 1
+        let result = server
+            .list_items(Parameters(ListItemsRequest {
+                status: Some("queued".to_string()),
+            }))
+            .await;
+        assert!(result.is_ok());
+        let items: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(items.as_array().unwrap().len(), 1);
+        assert_eq!(items[0]["status"], "queued");
+
+        // Filter by rejected — should be 1
+        let result = server
+            .list_items(Parameters(ListItemsRequest {
+                status: Some("rejected".to_string()),
+            }))
+            .await;
+        assert!(result.is_ok());
+        let items: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(items.as_array().unwrap().len(), 1);
+        assert_eq!(items[0]["status"], "rejected");
+
+        // No filter — should be 3
+        let result = server
+            .list_items(Parameters(ListItemsRequest { status: None }))
+            .await;
+        assert!(result.is_ok());
+        let items: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(items.as_array().unwrap().len(), 3);
+    }
+
+    // ─── Source Tool Tests ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_read_source_with_processed_file() {
+        use super::ReadSourceRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, processed_dir) = make_server();
+
+        // Enqueue an item to get a valid ID
+        let id = {
+            let queue = server.queue.lock().unwrap();
+            queue
+                .enqueue(Path::new("docs/source.pdf"), FileType::Pdf, None)
+                .unwrap()
+        };
+
+        // Create the processed text file
+        let txt_path = processed_dir.path().join(format!("{id}.txt"));
+        std::fs::write(&txt_path, "Preprocessed content for source.").unwrap();
+
+        let result = server
+            .read_source(Parameters(ReadSourceRequest { id }))
+            .await;
+        assert!(result.is_ok(), "read_source failed: {:?}", result);
+        assert_eq!(result.unwrap(), "Preprocessed content for source.");
+    }
+
+    #[tokio::test]
+    async fn test_read_source_missing_file() {
+        use super::ReadSourceRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        // Enqueue item but do NOT create a processed file
+        let id = {
+            let queue = server.queue.lock().unwrap();
+            queue
+                .enqueue(Path::new("docs/orphan.pdf"), FileType::Pdf, None)
+                .unwrap()
+        };
+
+        let result = server
+            .read_source(Parameters(ReadSourceRequest { id }))
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("not found") || msg.contains("unreadable"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_source_nonexistent_queue_item() {
+        use super::ReadSourceRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        // ID 999 was never enqueued
+        let result = server
+            .read_source(Parameters(ReadSourceRequest { id: 999 }))
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("999"),
+            "error should mention item ID: {msg}"
+        );
+    }
+
+    // ─── Wiki Tool Tests ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_write_and_read_page() {
+        use super::{ReadPageRequest, WritePageRequest};
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        let content = "# Rust\n\nA systems programming language.";
+        let write_result = server
+            .write_page(Parameters(WritePageRequest {
+                path: "entities/rust.md".to_string(),
+                content: content.to_string(),
+            }))
+            .await;
+        assert!(write_result.is_ok(), "write_page failed: {:?}", write_result);
+
+        let read_result = server
+            .read_page(Parameters(ReadPageRequest {
+                path: "entities/rust.md".to_string(),
+            }))
+            .await;
+        assert!(read_result.is_ok(), "read_page failed: {:?}", read_result);
+        assert_eq!(read_result.unwrap(), content);
+    }
+
+    #[tokio::test]
+    async fn test_update_index_and_read_index() {
+        use super::UpdateIndexRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        let result = server
+            .update_index(Parameters(UpdateIndexRequest {
+                entry: "- [[entities/rust]]".to_string(),
+            }))
+            .await;
+        assert!(result.is_ok(), "update_index failed: {:?}", result);
+
+        let index_result = server.read_index().await;
+        assert!(index_result.is_ok(), "read_index failed: {:?}", index_result);
+        let index = index_result.unwrap();
+        assert!(
+            index.contains("- [[entities/rust]]"),
+            "index should contain added entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_append_log() {
+        use super::AppendLogRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+        use super::ReadPageRequest;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        let result = server
+            .append_log(Parameters(AppendLogRequest {
+                entry: "ingest | Rust programming language".to_string(),
+            }))
+            .await;
+        assert!(result.is_ok(), "append_log failed: {:?}", result);
+
+        let log = server
+            .read_page(Parameters(ReadPageRequest {
+                path: "log.md".to_string(),
+            }))
+            .await;
+        assert!(log.is_ok(), "read_page log.md failed: {:?}", log);
+        let log_content = log.unwrap();
+        assert!(
+            log_content.contains("Rust programming language"),
+            "log should contain appended entry"
+        );
+        // Verify date prefix format ## [YYYY-MM-DD]
+        assert!(
+            log_content.lines().any(|line| line.starts_with("## [")),
+            "log should have ## [YYYY-MM-DD] formatted entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_pages() {
+        use super::{ListPagesRequest, WritePageRequest};
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _wiki_dir, _processed_dir) = make_server();
+
+        // Write several pages
+        for (path, content) in &[
+            ("entities/rust.md", "# Rust"),
+            ("entities/go.md", "# Go"),
+            ("concepts/ownership.md", "# Ownership"),
+        ] {
+            server
+                .write_page(Parameters(WritePageRequest {
+                    path: path.to_string(),
+                    content: content.to_string(),
+                }))
+                .await
+                .unwrap();
+        }
+
+        // List all pages — should include the 3 written + index.md + log.md + CLAUDE.md
+        let result = server
+            .list_pages(Parameters(ListPagesRequest { directory: None }))
+            .await;
+        assert!(result.is_ok(), "list_pages failed: {:?}", result);
+        let pages: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        assert!(pages.len() >= 3, "expected at least 3 pages, got {}", pages.len());
+
+        // Filter by entities subdirectory — should have exactly 2
+        let result = server
+            .list_pages(Parameters(ListPagesRequest {
+                directory: Some("entities".to_string()),
+            }))
+            .await;
+        assert!(result.is_ok());
+        let entity_pages: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(entity_pages.len(), 2, "expected 2 entity pages");
+    }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
