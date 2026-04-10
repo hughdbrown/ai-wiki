@@ -146,11 +146,25 @@ pub fn split_pdf_chapters(
 }
 
 pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
-    // Try pdf_extract::extract_text first
-    if let Ok(text) = pdf_extract::extract_text(path)
-        && !text.trim().is_empty()
-    {
-        return Ok(text);
+    // Try pdf_extract::extract_text first.
+    // Wrapped in catch_unwind because the upstream cff-parser crate can panic
+    // on malformed PDFs (e.g., cff-parser-0.1.0/src/encoding.rs:150).
+    let pdf_extract_result = {
+        let path_owned = path.to_path_buf();
+        std::panic::catch_unwind(|| pdf_extract::extract_text(&path_owned))
+    };
+    match pdf_extract_result {
+        Ok(Ok(text)) if !text.trim().is_empty() => return Ok(text),
+        Ok(Err(e)) => {
+            eprintln!("pdf-extract failed for {}: {e}", path.display());
+        }
+        Err(_) => {
+            eprintln!(
+                "pdf-extract panicked for {} (likely malformed font data), falling back to pdftotext",
+                path.display()
+            );
+        }
+        _ => {} // empty text, fall through
     }
 
     // Fallback to pdftotext (poppler) via Command

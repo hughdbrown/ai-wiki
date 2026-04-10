@@ -380,7 +380,10 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
 
 /// Strip matching leading and trailing single or double quotes from a string.
 fn strip_quotes(s: &str) -> &str {
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"'))
+            || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         &s[1..s.len() - 1]
     } else {
         s
@@ -398,7 +401,7 @@ fn read_file_list(list_path: &str) -> anyhow::Result<Vec<PathBuf>> {
         .lines()
         .map(|line| line.trim())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|line| strip_quotes(line))
+        .map(strip_quotes)
         .map(PathBuf::from)
         .collect();
 
@@ -543,6 +546,8 @@ mod tests {
         assert_eq!(strip_quotes(r#""hello'"#), r#""hello'"#); // mismatched, no strip
         assert_eq!(strip_quotes(""), "");
         assert_eq!(strip_quotes(r#""""#), ""); // empty quoted string
+        assert_eq!(strip_quotes("\""), "\""); // single char, no panic
+        assert_eq!(strip_quotes("'"), "'"); // single char, no panic
     }
 
     #[test]
