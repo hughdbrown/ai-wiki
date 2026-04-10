@@ -241,33 +241,42 @@ impl Queue {
 
     /// Retrieve a single item by its id.
     pub fn get_item(&self, id: i64) -> Result<QueueItem, QueueError> {
-        let item = self.conn.query_row(
-            "SELECT id, file_path, file_type, status, parent_id, wiki_page_path,
+        let item = self
+            .conn
+            .query_row(
+                "SELECT id, file_path, file_type, status, parent_id, wiki_page_path,
                     error_message, created_at, started_at, completed_at
              FROM queue_items WHERE id = ?1",
-            params![id],
-            |row| Self::row_to_item(row),
-        ).optional()?;
+                params![id],
+                Self::row_to_item,
+            )
+            .optional()?;
         item.ok_or(QueueError::NotFound(id))
     }
 
     /// Return the oldest queued item, or `None` if the queue is empty.
     pub fn get_next_queued(&self) -> Result<Option<QueueItem>, QueueError> {
-        let item = self.conn.query_row(
-            "SELECT id, file_path, file_type, status, parent_id, wiki_page_path,
+        let item = self
+            .conn
+            .query_row(
+                "SELECT id, file_path, file_type, status, parent_id, wiki_page_path,
                     error_message, created_at, started_at, completed_at
              FROM queue_items
              WHERE status = ?1
              ORDER BY created_at ASC
              LIMIT 1",
-            params![ItemStatus::Queued.as_str()],
-            |row| Self::row_to_item(row),
-        ).optional()?;
+                params![ItemStatus::Queued.as_str()],
+                Self::row_to_item,
+            )
+            .optional()?;
         Ok(item)
     }
 
     /// List all items, optionally filtered by status.
-    pub fn list_items(&self, status_filter: Option<&ItemStatus>) -> Result<Vec<QueueItem>, QueueError> {
+    pub fn list_items(
+        &self,
+        status_filter: Option<&ItemStatus>,
+    ) -> Result<Vec<QueueItem>, QueueError> {
         let items = if let Some(status) = status_filter {
             let mut stmt = self.conn.prepare(
                 "SELECT id, file_path, file_type, status, parent_id, wiki_page_path,
@@ -276,7 +285,7 @@ impl Queue {
                  WHERE status = ?1
                  ORDER BY created_at ASC",
             )?;
-            stmt.query_map(params![status.as_str()], |row| Self::row_to_item(row))?
+            stmt.query_map(params![status.as_str()], Self::row_to_item)?
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             let mut stmt = self.conn.prepare(
@@ -285,7 +294,7 @@ impl Queue {
                  FROM queue_items
                  ORDER BY created_at ASC",
             )?;
-            stmt.query_map([], |row| Self::row_to_item(row))?
+            stmt.query_map([], Self::row_to_item)?
                 .collect::<Result<Vec<_>, _>>()?
         };
         Ok(items)
@@ -293,9 +302,9 @@ impl Queue {
 
     /// Return counts of items grouped by status as a `Vec<(status_string, count)>`.
     pub fn count_by_status(&self) -> Result<Vec<(String, u64)>, QueueError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT status, COUNT(*) FROM queue_items GROUP BY status",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT status, COUNT(*) FROM queue_items GROUP BY status")?;
         let counts = stmt
             .query_map([], |row| {
                 let status: String = row.get(0)?;
@@ -316,7 +325,7 @@ impl Queue {
              ORDER BY created_at ASC",
         )?;
         let items = stmt
-            .query_map(params![parent_id], |row| Self::row_to_item(row))?
+            .query_map(params![parent_id], Self::row_to_item)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(items)
     }
@@ -393,7 +402,9 @@ mod tests {
     #[test]
     fn test_enqueue_and_get() {
         let q = make_queue();
-        let id = q.enqueue(Path::new("docs/readme.md"), FileType::Markdown, None).unwrap();
+        let id = q
+            .enqueue(Path::new("docs/readme.md"), FileType::Markdown, None)
+            .unwrap();
         assert_eq!(id, 1);
 
         let item = q.get_item(id).unwrap();
@@ -411,8 +422,16 @@ mod tests {
     #[test]
     fn test_enqueue_with_parent() {
         let q = make_queue();
-        let parent_id = q.enqueue(Path::new("archive.zip"), FileType::Zip, None).unwrap();
-        let child_id = q.enqueue(Path::new("archive/file.txt"), FileType::Text, Some(parent_id)).unwrap();
+        let parent_id = q
+            .enqueue(Path::new("archive.zip"), FileType::Zip, None)
+            .unwrap();
+        let child_id = q
+            .enqueue(
+                Path::new("archive/file.txt"),
+                FileType::Text,
+                Some(parent_id),
+            )
+            .unwrap();
 
         let child = q.get_item(child_id).unwrap();
         assert_eq!(child.parent_id, Some(parent_id));
@@ -442,7 +461,9 @@ mod tests {
     #[test]
     fn test_status_transitions() {
         let q = make_queue();
-        let id = q.enqueue(Path::new("doc.md"), FileType::Markdown, None).unwrap();
+        let id = q
+            .enqueue(Path::new("doc.md"), FileType::Markdown, None)
+            .unwrap();
 
         q.mark_in_progress(id).unwrap();
         let item = q.get_item(id).unwrap();
@@ -459,7 +480,9 @@ mod tests {
     #[test]
     fn test_mark_rejected() {
         let q = make_queue();
-        let id = q.enqueue(Path::new("sensitive.pdf"), FileType::Pdf, None).unwrap();
+        let id = q
+            .enqueue(Path::new("sensitive.pdf"), FileType::Pdf, None)
+            .unwrap();
         q.mark_rejected(id, "sensitive filename").unwrap();
 
         let item = q.get_item(id).unwrap();
@@ -471,7 +494,9 @@ mod tests {
     #[test]
     fn test_mark_error() {
         let q = make_queue();
-        let id = q.enqueue(Path::new("corrupt.pdf"), FileType::Pdf, None).unwrap();
+        let id = q
+            .enqueue(Path::new("corrupt.pdf"), FileType::Pdf, None)
+            .unwrap();
         q.mark_error(id, "failed to parse PDF").unwrap();
 
         let item = q.get_item(id).unwrap();
@@ -483,7 +508,8 @@ mod tests {
     #[test]
     fn test_list_items_all() {
         let q = make_queue();
-        q.enqueue(Path::new("a.md"), FileType::Markdown, None).unwrap();
+        q.enqueue(Path::new("a.md"), FileType::Markdown, None)
+            .unwrap();
         q.enqueue(Path::new("b.txt"), FileType::Text, None).unwrap();
 
         let items = q.list_items(None).unwrap();
@@ -493,7 +519,9 @@ mod tests {
     #[test]
     fn test_list_items_filtered() {
         let q = make_queue();
-        let id1 = q.enqueue(Path::new("a.md"), FileType::Markdown, None).unwrap();
+        let id1 = q
+            .enqueue(Path::new("a.md"), FileType::Markdown, None)
+            .unwrap();
         q.enqueue(Path::new("b.txt"), FileType::Text, None).unwrap();
         q.mark_in_progress(id1).unwrap();
 
@@ -509,8 +537,12 @@ mod tests {
     #[test]
     fn test_reset_in_progress() {
         let q = make_queue();
-        let id1 = q.enqueue(Path::new("a.md"), FileType::Markdown, None).unwrap();
-        let id2 = q.enqueue(Path::new("b.md"), FileType::Markdown, None).unwrap();
+        let id1 = q
+            .enqueue(Path::new("a.md"), FileType::Markdown, None)
+            .unwrap();
+        let id2 = q
+            .enqueue(Path::new("b.md"), FileType::Markdown, None)
+            .unwrap();
         q.mark_in_progress(id1).unwrap();
         q.mark_in_progress(id2).unwrap();
 
@@ -525,9 +557,15 @@ mod tests {
     #[test]
     fn test_children_and_completion_check() {
         let q = make_queue();
-        let parent_id = q.enqueue(Path::new("archive.zip"), FileType::Zip, None).unwrap();
-        let c1 = q.enqueue(Path::new("archive/a.txt"), FileType::Text, Some(parent_id)).unwrap();
-        let c2 = q.enqueue(Path::new("archive/b.txt"), FileType::Text, Some(parent_id)).unwrap();
+        let parent_id = q
+            .enqueue(Path::new("archive.zip"), FileType::Zip, None)
+            .unwrap();
+        let c1 = q
+            .enqueue(Path::new("archive/a.txt"), FileType::Text, Some(parent_id))
+            .unwrap();
+        let c2 = q
+            .enqueue(Path::new("archive/b.txt"), FileType::Text, Some(parent_id))
+            .unwrap();
 
         let children = q.children_of(parent_id).unwrap();
         assert_eq!(children.len(), 2);
@@ -546,9 +584,14 @@ mod tests {
     #[test]
     fn test_count_by_status() {
         let q = make_queue();
-        let id1 = q.enqueue(Path::new("a.md"), FileType::Markdown, None).unwrap();
-        let id2 = q.enqueue(Path::new("b.md"), FileType::Markdown, None).unwrap();
-        q.enqueue(Path::new("c.md"), FileType::Markdown, None).unwrap();
+        let id1 = q
+            .enqueue(Path::new("a.md"), FileType::Markdown, None)
+            .unwrap();
+        let id2 = q
+            .enqueue(Path::new("b.md"), FileType::Markdown, None)
+            .unwrap();
+        q.enqueue(Path::new("c.md"), FileType::Markdown, None)
+            .unwrap();
 
         q.mark_in_progress(id1).unwrap();
         q.mark_complete(id1, "wiki/a.md").unwrap();

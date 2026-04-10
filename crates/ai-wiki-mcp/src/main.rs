@@ -44,7 +44,9 @@ pub struct ErrorItemRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListItemsRequest {
-    #[schemars(description = "Optional status filter: queued, in_progress, complete, rejected, error")]
+    #[schemars(
+        description = "Optional status filter: queued, in_progress, complete, rejected, error"
+    )]
     status: Option<String>,
 }
 
@@ -116,7 +118,9 @@ impl WikiServer {
     // ─── Queue Tools ─────────────────────────────────────────────────────────
 
     /// Get the next queued item and mark it as in_progress.
-    #[tool(description = "Get the next queued item and mark it as in_progress. Returns JSON with item details or null if queue is empty.")]
+    #[tool(
+        description = "Get the next queued item and mark it as in_progress. Returns JSON with item details or null if queue is empty."
+    )]
     async fn get_next_item(&self) -> Result<String, String> {
         let queue = self.queue.lock().map_err(|e| format!("Lock error: {e}"))?;
         let item = queue
@@ -138,7 +142,9 @@ impl WikiServer {
     }
 
     /// Mark a queue item as complete with the path to its wiki page.
-    #[tool(description = "Mark a queue item as complete. Provide the item ID and the relative path to the generated wiki page. Returns whether all sibling items under the same parent are also complete.")]
+    #[tool(
+        description = "Mark a queue item as complete. Provide the item ID and the relative path to the generated wiki page. Returns whether all sibling items under the same parent are also complete."
+    )]
     async fn complete_item(
         &self,
         Parameters(req): Parameters<CompleteItemRequest>,
@@ -169,7 +175,9 @@ impl WikiServer {
     }
 
     /// Mark a queue item as rejected with a reason.
-    #[tool(description = "Mark a queue item as rejected. Provide the item ID and reason for rejection.")]
+    #[tool(
+        description = "Mark a queue item as rejected. Provide the item ID and reason for rejection."
+    )]
     async fn reject_item(
         &self,
         Parameters(req): Parameters<RejectItemRequest>,
@@ -203,7 +211,9 @@ impl WikiServer {
     }
 
     /// List queue items, optionally filtered by status.
-    #[tool(description = "List queue items. Optionally filter by status: queued, in_progress, complete, rejected, error.")]
+    #[tool(
+        description = "List queue items. Optionally filter by status: queued, in_progress, complete, rejected, error."
+    )]
     async fn list_items(
         &self,
         Parameters(req): Parameters<ListItemsRequest>,
@@ -211,8 +221,7 @@ impl WikiServer {
         let queue = self.queue.lock().map_err(|e| format!("Lock error: {e}"))?;
         let status_filter: Option<ItemStatus> = match &req.status {
             Some(s) => {
-                let parsed = ItemStatus::parse(s)
-                    .ok_or_else(|| format!("Invalid status: {s}"))?;
+                let parsed = ItemStatus::parse(s).ok_or_else(|| format!("Invalid status: {s}"))?;
                 Some(parsed)
             }
             None => None,
@@ -221,14 +230,15 @@ impl WikiServer {
             .list_items(status_filter.as_ref())
             .map_err(|e| format!("Queue error: {e}"))?;
         let json_items: Vec<serde_json::Value> = items.iter().map(item_to_json).collect();
-        Ok(serde_json::to_string_pretty(&json_items)
-            .map_err(|e| format!("JSON error: {e}"))?)
+        serde_json::to_string_pretty(&json_items).map_err(|e| format!("JSON error: {e}"))
     }
 
     // ─── Source Tools ────────────────────────────────────────────────────────
 
     /// Read preprocessed source text for a queue item.
-    #[tool(description = "Read the preprocessed text for a queue item. Reads from the processed/ directory using the item ID.")]
+    #[tool(
+        description = "Read the preprocessed text for a queue item. Reads from the processed/ directory using the item ID."
+    )]
     async fn read_source(
         &self,
         Parameters(req): Parameters<ReadSourceRequest>,
@@ -247,13 +257,13 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ReadPageRequest>,
     ) -> Result<String, String> {
-        self.wiki
-            .read_page(&req.path)
-            .map_err(|e| format!("{e}"))
+        self.wiki.read_page(&req.path).map_err(|e| format!("{e}"))
     }
 
     /// Write content to a wiki page.
-    #[tool(description = "Write or overwrite a wiki page. Provide the relative path and markdown content.")]
+    #[tool(
+        description = "Write or overwrite a wiki page. Provide the relative path and markdown content."
+    )]
     async fn write_page(
         &self,
         Parameters(req): Parameters<WritePageRequest>,
@@ -265,7 +275,9 @@ impl WikiServer {
     }
 
     /// List wiki pages, optionally within a subdirectory.
-    #[tool(description = "List wiki pages. Optionally specify a subdirectory like 'entities' or 'concepts'.")]
+    #[tool(
+        description = "List wiki pages. Optionally specify a subdirectory like 'entities' or 'concepts'."
+    )]
     async fn list_pages(
         &self,
         Parameters(req): Parameters<ListPagesRequest>,
@@ -274,8 +286,7 @@ impl WikiServer {
             .wiki
             .list_pages(req.directory.as_deref())
             .map_err(|e| format!("{e}"))?;
-        Ok(serde_json::to_string_pretty(&pages)
-            .map_err(|e| format!("JSON error: {e}"))?)
+        serde_json::to_string_pretty(&pages).map_err(|e| format!("JSON error: {e}"))
     }
 
     /// Read the wiki index page.
@@ -312,12 +323,11 @@ impl WikiServer {
 #[tool_handler]
 impl ServerHandler for WikiServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(
-                "AI Wiki MCP server. Use queue tools to get items, \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            "AI Wiki MCP server. Use queue tools to get items, \
                  source tools to read preprocessed text, and wiki tools \
                  to read/write wiki pages.",
-            )
+        )
     }
 }
 

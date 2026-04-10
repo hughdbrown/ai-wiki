@@ -33,12 +33,7 @@ pub fn extract_audio(
         .arg("-y")
         .arg(&output_path)
         .status()
-        .with_context(|| {
-            format!(
-                "failed to run ffmpeg on: {}",
-                video_path.display()
-            )
-        })?;
+        .with_context(|| format!("failed to run ffmpeg on: {}", video_path.display()))?;
 
     if !status.success() {
         return Err(anyhow::anyhow!(
@@ -59,12 +54,7 @@ pub fn transcribe_audio(audio_path: &Path, config: &Config) -> anyhow::Result<St
         .arg("--output-txt")
         .arg("--no-timestamps")
         .output()
-        .with_context(|| {
-            format!(
-                "failed to run whisper-cpp on: {}",
-                audio_path.display()
-            )
-        })?;
+        .with_context(|| format!("failed to run whisper-cpp on: {}", audio_path.display()))?;
 
     if output.status.success() {
         // whisper-cpp may write to stdout

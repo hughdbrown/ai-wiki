@@ -27,16 +27,14 @@ impl Wiki {
 
         let index_path = self.root.join("index.md");
         if !index_path.exists() {
-            fs::write(&index_path, Self::default_index()).map_err(|e| {
-                anyhow::anyhow!("Failed to write {}: {}", index_path.display(), e)
-            })?;
+            fs::write(&index_path, Self::default_index())
+                .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", index_path.display(), e))?;
         }
 
         let log_path = self.root.join("log.md");
         if !log_path.exists() {
-            fs::write(&log_path, "# Wiki Log\n").map_err(|e| {
-                anyhow::anyhow!("Failed to write {}: {}", log_path.display(), e)
-            })?;
+            fs::write(&log_path, "# Wiki Log\n")
+                .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", log_path.display(), e))?;
         }
 
         let claude_md_path = self.root.join("CLAUDE.md");
@@ -182,13 +180,13 @@ Organized under section headings: ## Entities, ## Concepts, ## Claims, ## Source
 Each log entry is prefixed: `## [YYYY-MM-DD] action | Title`
 
 Actions: `ingest`, `update`, `query`, `lint`
-"#.to_string()
+"#
+        .to_string()
     }
 
     fn collect_md_files(dir: &Path, root: &Path, pages: &mut Vec<String>) -> anyhow::Result<()> {
-        let entries = fs::read_dir(dir).map_err(|e| {
-            anyhow::anyhow!("Failed to read directory {}: {}", dir.display(), e)
-        })?;
+        let entries = fs::read_dir(dir)
+            .map_err(|e| anyhow::anyhow!("Failed to read directory {}: {}", dir.display(), e))?;
 
         for entry in entries {
             let entry = entry.map_err(|e| {
@@ -267,7 +265,8 @@ mod tests {
         wiki.init().unwrap();
 
         wiki.write_page("entities/rust.md", "# Rust").unwrap();
-        wiki.write_page("concepts/ownership.md", "# Ownership").unwrap();
+        wiki.write_page("concepts/ownership.md", "# Ownership")
+            .unwrap();
         wiki.write_page("claims/safe.md", "# Safe").unwrap();
 
         let pages = wiki.list_pages(None).unwrap();

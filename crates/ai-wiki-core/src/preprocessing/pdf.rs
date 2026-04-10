@@ -38,8 +38,8 @@ fn has_outlines(doc: &Document) -> bool {
 }
 
 pub fn classify_pdf(path: &Path, config: &Config) -> anyhow::Result<PdfClassification> {
-    let doc = Document::load(path)
-        .with_context(|| format!("failed to load PDF: {}", path.display()))?;
+    let doc =
+        Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
 
     let page_count = doc.get_pages().len() as u32;
     let outlines_present = has_outlines(&doc);
@@ -57,8 +57,8 @@ pub fn split_pdf_chapters(
     output_dir: &Path,
     config: &Config,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let doc = Document::load(path)
-        .with_context(|| format!("failed to load PDF: {}", path.display()))?;
+    let doc =
+        Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
 
     let mut named_destinations = IndexMap::new();
     let outlines = doc
@@ -84,12 +84,12 @@ pub fn split_pdf_chapters(
         .iter()
         .filter_map(|o| {
             if let lopdf::Outline::Destination(dest) = o {
-                dest.page().ok().and_then(|page_obj| {
-                    match page_obj.as_reference() {
+                dest.page()
+                    .ok()
+                    .and_then(|page_obj| match page_obj.as_reference() {
                         Ok(obj_id) => page_id_to_num.get(&obj_id).copied(),
                         Err(_) => page_obj.as_i64().ok().map(|n| n as u32),
-                    }
-                })
+                    })
             } else {
                 None
             }

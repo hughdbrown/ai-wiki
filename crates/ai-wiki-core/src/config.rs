@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -47,13 +47,9 @@ impl Default for Config {
                 database_path: PathBuf::from("ai-wiki.db"),
                 processed_dir: PathBuf::from("processed"),
             },
-            pdf: PdfConfig {
-                book_min_pages: 50,
-            },
+            pdf: PdfConfig { book_min_pages: 50 },
             rejection: RejectionConfig {
-                non_operative_extensions: vec![
-                    ".dmg".to_string(),
-                ],
+                non_operative_extensions: vec![".dmg".to_string()],
                 sensitive_filename_patterns: vec![
                     "divorce".to_string(),
                     "court".to_string(),
@@ -80,16 +76,18 @@ impl Config {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read config file {}: {}", path.display(), e))?;
-        let config: Config = toml::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e))?;
+        let config: Config = toml::from_str(&content).map_err(|e| {
+            anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e)
+        })?;
         Ok(config)
     }
 
     pub fn save(&self, path: &std::path::Path) -> anyhow::Result<()> {
         let content = toml::to_string_pretty(self)
             .map_err(|e| anyhow::anyhow!("failed to serialize config: {}", e))?;
-        std::fs::write(path, content)
-            .map_err(|e| anyhow::anyhow!("failed to write config file {}: {}", path.display(), e))?;
+        std::fs::write(path, content).map_err(|e| {
+            anyhow::anyhow!("failed to write config file {}: {}", path.display(), e)
+        })?;
         Ok(())
     }
 }
@@ -106,7 +104,10 @@ mod tests {
         let deserialized: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.pdf.book_min_pages, 50);
         assert_eq!(deserialized.paths.raw_dir, PathBuf::from("raw"));
-        assert_eq!(deserialized.rejection.non_operative_extensions, vec![".dmg"]);
+        assert_eq!(
+            deserialized.rejection.non_operative_extensions,
+            vec![".dmg"]
+        );
     }
 
     #[test]

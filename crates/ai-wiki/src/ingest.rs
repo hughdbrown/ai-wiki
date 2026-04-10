@@ -6,8 +6,8 @@ use anyhow::Context;
 use ai_wiki_core::config::Config;
 use ai_wiki_core::preprocessing::pdf::PdfClassification;
 use ai_wiki_core::preprocessing::{
-    classify_pdf, detect_file_type, extract_audio, extract_pdf_text, extract_zip,
-    split_pdf_chapters, transcribe_audio, FileClassification,
+    FileClassification, classify_pdf, detect_file_type, extract_audio, extract_pdf_text,
+    extract_zip, split_pdf_chapters, transcribe_audio,
 };
 use ai_wiki_core::queue::{FileType, Queue};
 
@@ -31,13 +31,12 @@ impl IngestResult {
 // ─── Public entry point ───────────────────────────────────────────────────────
 
 pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
-    let queue = Queue::open(&config.paths.database_path)
-        .with_context(|| {
-            format!(
-                "failed to open queue database at {}",
-                config.paths.database_path.display()
-            )
-        })?;
+    let queue = Queue::open(&config.paths.database_path).with_context(|| {
+        format!(
+            "failed to open queue database at {}",
+            config.paths.database_path.display()
+        )
+    })?;
 
     let reset_count = queue
         .reset_in_progress()
@@ -153,10 +152,7 @@ fn process_file(
                             }
                         }
                         Err(e) => {
-                            eprintln!(
-                                "Failed to split PDF chapters for {}: {e:#}",
-                                path.display()
-                            );
+                            eprintln!("Failed to split PDF chapters for {}: {e:#}", path.display());
                             queue
                                 .mark_error(id, &format!("{e:#}"))
                                 .context("failed to mark PDF chapter-split error")?;
@@ -176,10 +172,7 @@ fn process_file(
 
                 Ok(PdfClassification::Simple) => {
                     if let Err(e) = extract_and_store_text(path, id, config) {
-                        eprintln!(
-                            "Failed to extract text for {}: {e:#}",
-                            path.display()
-                        );
+                        eprintln!("Failed to extract text for {}: {e:#}", path.display());
                         queue
                             .mark_error(id, &format!("{e:#}"))
                             .context("failed to mark PDF text-extraction error")?;
@@ -205,10 +198,7 @@ fn process_file(
 
             let dest = config.paths.processed_dir.join(format!("{id}.txt"));
             if let Err(e) = copy_to_processed(path, &dest) {
-                eprintln!(
-                    "Failed to copy {} to processed dir: {e:#}",
-                    path.display()
-                );
+                eprintln!("Failed to copy {} to processed dir: {e:#}", path.display());
                 queue
                     .mark_error(id, &format!("{e:#}"))
                     .context("failed to mark copy error")?;
@@ -223,10 +213,7 @@ fn process_file(
             result.queued += 1;
 
             if let Err(e) = transcribe_source(path, id, &file_type, config) {
-                eprintln!(
-                    "Failed to transcribe {}: {e:#}",
-                    path.display()
-                );
+                eprintln!("Failed to transcribe {}: {e:#}", path.display());
                 queue
                     .mark_error(id, &format!("{e:#}"))
                     .context("failed to mark transcription error")?;
@@ -355,8 +342,7 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
         .with_context(|| format!("failed to read directory: {}", dir.display()))?;
 
     for entry in entries {
-        let entry =
-            entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
         let path = entry.path();
 
         if path.is_dir() {

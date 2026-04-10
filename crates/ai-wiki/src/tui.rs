@@ -61,37 +61,37 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, queue: Queue) -> anyhow::Resu
         terminal.draw(|f| draw(f, &items, &counts, &mut table_state))?;
 
         // Poll for events with 250ms timeout for responsiveness
-        if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::Char('r') => {
+                    // Force immediate refresh
+                    last_refresh = Instant::now() - Duration::from_secs(3);
                 }
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('r') => {
-                        // Force immediate refresh
-                        last_refresh = Instant::now() - Duration::from_secs(3);
+                KeyCode::Up => {
+                    let sel = match table_state.selected() {
+                        Some(0) | None => 0,
+                        Some(i) => i - 1,
+                    };
+                    if !items.is_empty() {
+                        table_state.select(Some(sel));
                     }
-                    KeyCode::Up => {
+                }
+                KeyCode::Down => {
+                    if !items.is_empty() {
                         let sel = match table_state.selected() {
-                            Some(0) | None => 0,
-                            Some(i) => i - 1,
+                            None => 0,
+                            Some(i) => (i + 1).min(items.len() - 1),
                         };
-                        if !items.is_empty() {
-                            table_state.select(Some(sel));
-                        }
+                        table_state.select(Some(sel));
                     }
-                    KeyCode::Down => {
-                        if !items.is_empty() {
-                            let sel = match table_state.selected() {
-                                None => 0,
-                                Some(i) => (i + 1).min(items.len() - 1),
-                            };
-                            table_state.select(Some(sel));
-                        }
-                    }
-                    _ => {}
                 }
+                _ => {}
             }
         }
     }
@@ -114,57 +114,63 @@ fn draw(
 
     // ── Status bar ────────────────────────────────────────────────────────────
     let status_text = format_counts(counts);
-    let status_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Queue Status");
+    let status_block = Block::default().borders(Borders::ALL).title("Queue Status");
     let status_para = Paragraph::new(status_text)
         .block(status_block)
         .style(Style::default().fg(Color::White));
     f.render_widget(status_para, chunks[0]);
 
     // ── Queue table ───────────────────────────────────────────────────────────
-    let header_cells = ["ID", "File", "Type", "Status", "Started", "Parent", "Wiki Page"]
-        .iter()
-        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).bold()));
+    let header_cells = [
+        "ID",
+        "File",
+        "Type",
+        "Status",
+        "Started",
+        "Parent",
+        "Wiki Page",
+    ]
+    .iter()
+    .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).bold()));
     let header = Row::new(header_cells).height(1).bottom_margin(0);
 
-    let rows: Vec<Row> = items.iter().map(|item| {
-        let row_style = match &item.status {
-            ItemStatus::Queued => Style::default().fg(Color::DarkGray),
-            ItemStatus::InProgress => Style::default().fg(Color::Yellow),
-            ItemStatus::Complete => Style::default().fg(Color::Green),
-            ItemStatus::Rejected | ItemStatus::Error => Style::default().fg(Color::Red),
-        };
+    let rows: Vec<Row> = items
+        .iter()
+        .map(|item| {
+            let row_style = match &item.status {
+                ItemStatus::Queued => Style::default().fg(Color::DarkGray),
+                ItemStatus::InProgress => Style::default().fg(Color::Yellow),
+                ItemStatus::Complete => Style::default().fg(Color::Green),
+                ItemStatus::Rejected | ItemStatus::Error => Style::default().fg(Color::Red),
+            };
 
-        let started = item
-            .started_at
-            .map(|dt| dt.format("%H:%M:%S").to_string())
-            .unwrap_or_default();
+            let started = item
+                .started_at
+                .map(|dt| dt.format("%H:%M:%S").to_string())
+                .unwrap_or_default();
 
-        let parent = item
-            .parent_id
-            .map(|id| id.to_string())
-            .unwrap_or_default();
+            let parent = item.parent_id.map(|id| id.to_string()).unwrap_or_default();
 
-        let wiki_page = item.wiki_page_path.clone().unwrap_or_default();
+            let wiki_page = item.wiki_page_path.clone().unwrap_or_default();
 
-        let file_name = item
-            .file_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| item.file_path.to_string_lossy().into_owned());
+            let file_name = item
+                .file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| item.file_path.to_string_lossy().into_owned());
 
-        Row::new([
-            Cell::from(item.id.to_string()),
-            Cell::from(file_name),
-            Cell::from(item.file_type.as_str()),
-            Cell::from(item.status.as_str()),
-            Cell::from(started),
-            Cell::from(parent),
-            Cell::from(wiki_page),
-        ])
-        .style(row_style)
-    }).collect();
+            Row::new([
+                Cell::from(item.id.to_string()),
+                Cell::from(file_name),
+                Cell::from(item.file_type.as_str()),
+                Cell::from(item.status.as_str()),
+                Cell::from(started),
+                Cell::from(parent),
+                Cell::from(wiki_page),
+            ])
+            .style(row_style)
+        })
+        .collect();
 
     let widths = [
         Constraint::Length(6),
