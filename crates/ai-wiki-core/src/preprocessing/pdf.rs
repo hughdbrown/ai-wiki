@@ -3,7 +3,6 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
-use indexmap::IndexMap;
 use lopdf::Document;
 
 use crate::config::Config;
@@ -14,39 +13,24 @@ pub enum PdfClassification {
     Book { chapter_count: usize },
 }
 
-fn count_top_level_outlines(doc: &Document) -> usize {
-    let mut named_destinations = IndexMap::new();
-    doc.get_outlines(None, None, &mut named_destinations)
-        .ok()
-        .and_then(|o| o)
-        .map(|outlines| {
-            outlines
-                .iter()
-                .filter(|o| matches!(o, lopdf::Outline::Destination(_)))
-                .count()
-        })
-        .unwrap_or(0)
-}
-
-fn has_outlines(doc: &Document) -> bool {
-    let mut named_destinations = IndexMap::new();
-    doc.get_outlines(None, None, &mut named_destinations)
-        .ok()
-        .and_then(|o| o)
-        .map(|outlines| !outlines.is_empty())
-        .unwrap_or(false)
-}
-
 pub fn classify_pdf(path: &Path, config: &Config) -> anyhow::Result<PdfClassification> {
     let doc =
         Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
 
     let page_count = doc.get_pages().len() as u32;
-    let outlines_present = has_outlines(&doc);
 
-    if outlines_present && page_count >= config.pdf.book_min_pages {
-        let chapter_count = count_top_level_outlines(&doc);
-        Ok(PdfClassification::Book { chapter_count })
+    // Use get_toc() for reliable outline detection
+    let toc = match doc.get_toc() {
+        Ok(toc) if !toc.toc.is_empty() => toc,
+        _ => return Ok(PdfClassification::Simple),
+    };
+
+    let top_level_count = toc.toc.iter().filter(|e| e.level == 1).count();
+
+    if top_level_count > 0 && page_count >= config.pdf.book_min_pages {
+        Ok(PdfClassification::Book {
+            chapter_count: top_level_count,
+        })
     } else {
         Ok(PdfClassification::Simple)
     }
@@ -60,47 +44,21 @@ pub fn split_pdf_chapters(
     let doc =
         Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
 
-    let mut named_destinations = IndexMap::new();
-    let outlines = doc
-        .get_outlines(None, None, &mut named_destinations)
-        .ok()
-        .and_then(|o| o)
-        .unwrap_or_default();
-
-    if outlines.is_empty() {
-        // No bookmarks: return the original path as the single chunk
-        return Ok(vec![path.to_path_buf()]);
-    }
-
     let total_pages = doc.get_pages().len() as u32;
 
-    // Build a lookup: ObjectId -> page number
-    let pages = doc.get_pages(); // BTreeMap<u32, ObjectId>
-    let page_id_to_num: std::collections::HashMap<lopdf::ObjectId, u32> =
-        pages.iter().map(|(&num, &id)| (id, num)).collect();
+    // Use get_toc() which properly resolves titles, page numbers, and nesting levels
+    let toc = doc
+        .get_toc()
+        .map_err(|e| anyhow::anyhow!("failed to get table of contents: {e}"))?;
 
-    // Extract page numbers from top-level Destination outlines
-    let page_starts: Vec<u32> = outlines
-        .iter()
-        .filter_map(|o| {
-            if let lopdf::Outline::Destination(dest) = o {
-                dest.page()
-                    .ok()
-                    .and_then(|page_obj| match page_obj.as_reference() {
-                        Ok(obj_id) => page_id_to_num.get(&obj_id).copied(),
-                        Err(_) => page_obj.as_i64().ok().map(|n| n as u32),
-                    })
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Only split on top-level (level 1) entries to avoid fragmenting into sub-sections
+    let top_level: Vec<_> = toc.toc.iter().filter(|e| e.level == 1).collect();
 
-    if page_starts.is_empty() {
+    if top_level.is_empty() {
         return Ok(vec![path.to_path_buf()]);
     }
 
-    let mut page_starts = page_starts;
+    let mut page_starts: Vec<u32> = top_level.iter().map(|e| e.page as u32).collect();
     page_starts.sort();
     page_starts.dedup();
 
