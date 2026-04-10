@@ -46,23 +46,53 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
     }
 
     let files = resolve_files(path_str)?;
-    eprintln!("Resolved {} file(s) to ingest.", files.len());
+    let total = files.len();
+    eprintln!("Resolved {total} file(s) to ingest.");
 
     let mut totals = IngestResult::default();
+    let ingest_start = std::time::Instant::now();
 
-    for file in &files {
+    for (i, file) in files.iter().enumerate() {
+        let file_name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.to_string_lossy().into_owned());
+        eprint!("[{}/{}] {file_name} ... ", i + 1, total);
+
+        let item_start = std::time::Instant::now();
         match process_file(file, config, &queue, None, 0) {
-            Ok(result) => totals.merge(result),
+            Ok(result) => {
+                let elapsed = item_start.elapsed();
+                let status = if result.rejected > 0 {
+                    "rejected"
+                } else if result.errors > 0 {
+                    "error"
+                } else if result.queued == 0 {
+                    "skipped"
+                } else {
+                    "queued"
+                };
+                eprintln!("{status} ({:.1}s)", elapsed.as_secs_f64());
+                totals.merge(result);
+            }
             Err(e) => {
-                eprintln!("Error processing {}: {e:#}", file.display());
+                let elapsed = item_start.elapsed();
+                eprintln!("ERROR ({:.1}s): {e:#}", elapsed.as_secs_f64());
                 totals.errors += 1;
             }
         }
     }
 
+    let total_elapsed = ingest_start.elapsed();
+    let mins = total_elapsed.as_secs() / 60;
+    let secs = total_elapsed.as_secs() % 60;
+
     println!(
-        "Ingest complete — queued: {}, rejected: {}, errors: {}",
-        totals.queued, totals.rejected, totals.errors
+        "Ingest complete — queued: {}, rejected: {}, errors: {}, skipped: {} ({mins}m {secs}s)",
+        totals.queued,
+        totals.rejected,
+        totals.errors,
+        total - totals.queued - totals.rejected - totals.errors
     );
 
     Ok(())
@@ -170,6 +200,7 @@ fn process_file(
                                     queue
                                         .mark_error(chapter_id, &format!("{e:#}"))
                                         .context("failed to mark chapter error")?;
+                                    result.queued = result.queued.saturating_sub(1);
                                     result.errors += 1;
                                 }
                             }

@@ -130,10 +130,7 @@ impl WikiServer {
                 .map_err(|e| format!("Queue error: {e}"))?;
             match item {
                 Some(item) => {
-                    let updated = queue
-                        .get_item(item.id)
-                        .map_err(|e| format!("Failed to re-read item: {e}"))?;
-                    Ok(serde_json::to_string(&item_to_json(&updated))
+                    Ok(serde_json::to_string(&item_to_json(&item))
                         .map_err(|e| format!("JSON error: {e}"))?)
                 }
                 None => Ok("null".to_string()),

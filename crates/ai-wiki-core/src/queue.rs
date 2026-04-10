@@ -424,13 +424,18 @@ impl Queue {
             )
             .optional()?;
 
-        if let Some(ref item) = item {
-            let now = Utc::now().to_rfc3339();
+        let item = if let Some(mut item) = item {
+            let now = Utc::now();
             tx.execute(
                 "UPDATE queue_items SET status = ?1, started_at = ?2 WHERE id = ?3",
-                params![ItemStatus::InProgress.as_str(), now, item.id],
+                params![ItemStatus::InProgress.as_str(), now.to_rfc3339(), item.id],
             )?;
-        }
+            item.status = ItemStatus::InProgress;
+            item.started_at = Some(now);
+            Some(item)
+        } else {
+            None
+        };
 
         tx.commit()?;
         Ok(item)
