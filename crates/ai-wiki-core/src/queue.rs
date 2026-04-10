@@ -197,7 +197,7 @@ impl Queue {
         parent_id: Option<i64>,
     ) -> Result<bool, QueueError> {
         let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM queue_items WHERE file_path = ?1 AND parent_id IS ?2",
+            "SELECT COUNT(*) FROM queue_items WHERE file_path = ?1 AND COALESCE(parent_id, 0) = COALESCE(?2, 0)",
             params![file_path.to_string_lossy().as_ref(), parent_id],
             |row| row.get(0),
         )?;
@@ -766,5 +766,42 @@ mod tests {
         q.enqueue(Path::new("a.txt"), FileType::Text, None).unwrap();
         let result = q.enqueue(Path::new("a.txt"), FileType::Text, None);
         assert!(result.is_err()); // UNIQUE constraint violation
+    }
+
+    #[test]
+    fn test_claim_next_queued() {
+        let q = make_queue();
+        // Empty queue returns None.
+        assert!(q.claim_next_queued().unwrap().is_none());
+
+        q.enqueue(Path::new("a.txt"), FileType::Text, None).unwrap();
+        let item = q.claim_next_queued().unwrap().unwrap();
+
+        // After claim, item is in_progress in DB
+        let db_item = q.get_item(item.id).unwrap();
+        assert_eq!(db_item.status, ItemStatus::InProgress);
+        assert!(db_item.started_at.is_some());
+
+        // Next claim returns None (no more queued)
+        assert!(q.claim_next_queued().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_requeue_item() {
+        let q = make_queue();
+        let id = q.enqueue(Path::new("a.txt"), FileType::Text, None).unwrap();
+        q.mark_error(id, "test error").unwrap();
+        q.requeue_item(id).unwrap();
+        let item = q.get_item(id).unwrap();
+        assert_eq!(item.status, ItemStatus::Queued);
+        assert!(item.error_message.is_none());
+    }
+
+    #[test]
+    fn test_requeue_non_error_fails() {
+        let q = make_queue();
+        let id = q.enqueue(Path::new("a.txt"), FileType::Text, None).unwrap();
+        // Can't requeue a queued item (not in error or rejected state)
+        assert!(q.requeue_item(id).is_err());
     }
 }

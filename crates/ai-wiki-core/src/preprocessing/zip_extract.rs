@@ -64,8 +64,8 @@ pub fn extract_zip(zip_path: &Path, output_dir: &Path) -> anyhow::Result<Vec<Pat
 
         extracted_paths.push(dest_path);
 
-        if extracted_paths.len() > MAX_ENTRIES {
-            anyhow::bail!("ZIP extraction aborted: more than {} entries", MAX_ENTRIES);
+        if extracted_paths.len() >= MAX_ENTRIES {
+            anyhow::bail!("ZIP extraction aborted: {} or more entries", MAX_ENTRIES);
         }
     }
 

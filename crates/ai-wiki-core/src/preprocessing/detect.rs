@@ -34,7 +34,7 @@ pub fn detect_file_type(path: &Path, config: &Config) -> FileClassification {
         .to_lowercase();
 
     for pattern in &config.rejection.sensitive_filename_patterns {
-        if filename.contains(pattern.as_str()) {
+        if filename.contains(&pattern.to_lowercase()) {
             return FileClassification::Rejected(format!("sensitive filename pattern: {pattern}"));
         }
     }

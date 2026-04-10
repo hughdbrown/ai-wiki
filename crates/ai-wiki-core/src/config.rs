@@ -94,6 +94,10 @@ impl Config {
             }
         }
 
+        if self.tools.whisper_model_path.as_os_str().is_empty() {
+            anyhow::bail!("tools.whisper_model_path must not be empty");
+        }
+
         Ok(())
     }
 
@@ -103,6 +107,7 @@ impl Config {
         let config: Config = toml::from_str(&content).map_err(|e| {
             anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e)
         })?;
+        config.validate()?;
         Ok(config)
     }
 

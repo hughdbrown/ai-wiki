@@ -136,7 +136,7 @@ impl WikiServer {
                     let updated = queue
                         .get_item(item.id)
                         .map_err(|e| format!("Failed to re-read item: {e}"))?;
-                    Ok(serde_json::to_string_pretty(&item_to_json(&updated))
+                    Ok(serde_json::to_string(&item_to_json(&updated))
                         .map_err(|e| format!("JSON error: {e}"))?)
                 }
                 None => Ok("null".to_string()),
@@ -253,7 +253,7 @@ impl WikiServer {
                 .list_items(status_filter.as_ref())
                 .map_err(|e| format!("Queue error: {e}"))?;
             let json_items: Vec<serde_json::Value> = items.iter().map(item_to_json).collect();
-            serde_json::to_string_pretty(&json_items).map_err(|e| format!("JSON error: {e}"))
+            serde_json::to_string(&json_items).map_err(|e| format!("JSON error: {e}"))
         })
         .await
         .map_err(|e| format!("task join error: {e}"))?
@@ -337,7 +337,7 @@ impl WikiServer {
             let pages = wiki
                 .list_pages(req.directory.as_deref())
                 .map_err(|e| format!("{e}"))?;
-            serde_json::to_string_pretty(&pages).map_err(|e| format!("JSON error: {e}"))
+            serde_json::to_string(&pages).map_err(|e| format!("JSON error: {e}"))
         })
         .await
         .map_err(|e| format!("task join error: {e}"))?

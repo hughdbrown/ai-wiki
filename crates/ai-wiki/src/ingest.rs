@@ -126,8 +126,6 @@ fn process_file(
                             }
                         }
                     }
-                    // Cleanup extracted files
-                    let _ = std::fs::remove_dir_all(&extract_dir);
                 }
                 Err(e) => {
                     eprintln!("Failed to extract zip {}: {e:#}", path.display());
@@ -169,8 +167,6 @@ fn process_file(
                                     result.errors += 1;
                                 }
                             }
-                            // Cleanup split chapter files
-                            let _ = std::fs::remove_dir_all(&chapter_dir);
                         }
                         Err(e) => {
                             eprintln!("Failed to split PDF chapters for {}: {e:#}", path.display());
@@ -325,7 +321,7 @@ fn resolve_files(path_str: &str) -> anyhow::Result<Vec<PathBuf>> {
 
     if path.is_dir() {
         let mut files = Vec::new();
-        walk_dir(path, &mut files)?;
+        walk_dir(path, &mut files, 0)?;
         if files.is_empty() {
             anyhow::bail!("directory is empty: {}", path.display());
         }
@@ -356,7 +352,17 @@ fn resolve_files(path_str: &str) -> anyhow::Result<Vec<PathBuf>> {
     Ok(entries)
 }
 
-fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+const MAX_WALK_DEPTH: usize = 50;
+
+fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>, depth: usize) -> anyhow::Result<()> {
+    if depth > MAX_WALK_DEPTH {
+        anyhow::bail!(
+            "directory nesting exceeds {} levels: {}",
+            MAX_WALK_DEPTH,
+            dir.display()
+        );
+    }
+
     let entries = fs::read_dir(dir)
         .with_context(|| format!("failed to read directory: {}", dir.display()))?;
 
@@ -368,7 +374,7 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
             .with_context(|| format!("failed to get file type for {}", path.display()))?;
 
         if file_type.is_dir() {
-            walk_dir(&path, files)?;
+            walk_dir(&path, files, depth + 1)?;
         } else if file_type.is_file() {
             files.push(path);
         }

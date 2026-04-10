@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use indexmap::IndexMap;
@@ -195,16 +196,30 @@ pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> 
     }
 }
 
+static OCR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 // OCR fallback: render pages to images, then tesseract each
 fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
-    let temp_dir = std::env::temp_dir().join(format!("ai_wiki_ocr_{}", std::process::id()));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "ai_wiki_ocr_{}_{}",
+        std::process::id(),
+        OCR_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&temp_dir)?;
+
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))?;
+    let page_prefix = temp_dir.join("page");
+    let page_prefix_str = page_prefix
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("temp dir path is not valid UTF-8: {}", page_prefix.display()))?;
 
     // Render PDF pages to PPM images
     let status = super::run_tool(
         Command::new(&config.tools.pdftoppm_path)
-            .arg(path.to_str().unwrap_or_default())
-            .arg(temp_dir.join("page").to_str().unwrap_or_default()),
+            .arg(path_str)
+            .arg(page_prefix_str),
         "pdftoppm",
     )?;
 
@@ -234,9 +249,19 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
     };
 
     for page_img in &pages {
+        let page_img_str = match page_img.to_str() {
+            Some(s) => s,
+            None => {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(anyhow::anyhow!(
+                    "page image path is not valid UTF-8: {}",
+                    page_img.display()
+                ));
+            }
+        };
         let output = match super::run_tool_output(
             Command::new(&config.tools.tesseract_path)
-                .args([page_img.to_str().unwrap_or_default(), "stdout"]),
+                .args([page_img_str, "stdout"]),
             "tesseract",
         ) {
             Ok(o) => o,
