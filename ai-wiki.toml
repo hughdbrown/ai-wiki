@@ -1,0 +1,29 @@
+[paths]
+raw_dir = "/Users/hughbrown/workspace/hughdbrown/rust/ai-wiki/raw"
+wiki_dir = "/Users/hughbrown/workspace/hughdbrown/rust/ai-wiki/wiki"
+database_path = "/Users/hughbrown/workspace/hughdbrown/rust/ai-wiki/ai-wiki.db"
+processed_dir = "/Users/hughbrown/workspace/hughdbrown/rust/ai-wiki/processed"
+
+[pdf]
+book_min_pages = 50
+
+[rejection]
+non_operative_extensions = [".dmg"]
+sensitive_filename_patterns = [
+    "divorce",
+    "court",
+    "bank.statement",
+    "tax.return",
+    "report.card",
+    "financial",
+    "lease",
+]
+
+[tools]
+qpdf_path = "qpdf"
+pdftotext_path = "pdftotext"
+pdftoppm_path = "pdftoppm"
+tesseract_path = "tesseract"
+ffmpeg_path = "ffmpeg"
+whisper_cpp_path = "whisper-cpp"
+whisper_model_path = "models/ggml-large-v3.bin"

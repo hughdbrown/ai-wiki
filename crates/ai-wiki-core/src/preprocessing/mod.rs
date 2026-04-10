@@ -11,7 +11,10 @@ pub use zip_extract::extract_zip;
 use std::process::Command;
 
 /// Run an external tool, returning a clear error if the binary is not found.
-pub(crate) fn run_tool(cmd: &mut Command, tool_name: &str) -> anyhow::Result<std::process::ExitStatus> {
+pub(crate) fn run_tool(
+    cmd: &mut Command,
+    tool_name: &str,
+) -> anyhow::Result<std::process::ExitStatus> {
     cmd.status().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             anyhow::anyhow!(
@@ -26,7 +29,10 @@ pub(crate) fn run_tool(cmd: &mut Command, tool_name: &str) -> anyhow::Result<std
 }
 
 /// Run an external tool and capture output, returning a clear error if the binary is not found.
-pub(crate) fn run_tool_output(cmd: &mut Command, tool_name: &str) -> anyhow::Result<std::process::Output> {
+pub(crate) fn run_tool_output(
+    cmd: &mut Command,
+    tool_name: &str,
+) -> anyhow::Result<std::process::Output> {
     cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             anyhow::anyhow!(

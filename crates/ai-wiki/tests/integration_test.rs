@@ -86,8 +86,11 @@ fn test_ingest_markdown_files_end_to_end() {
     // Create 3 markdown files in raw_dir.
     let files = ["alpha.md", "beta.md", "gamma.md"];
     for name in &files {
-        fs::write(raw_dir.join(name), format!("# {name}\n\nContent of {name}."))
-            .expect("failed to write md file");
+        fs::write(
+            raw_dir.join(name),
+            format!("# {name}\n\nContent of {name}."),
+        )
+        .expect("failed to write md file");
     }
 
     // Run ingest on the raw directory.
@@ -110,7 +113,12 @@ fn test_ingest_markdown_files_end_to_end() {
     let queued = queue
         .list_items(Some(&ItemStatus::Queued))
         .expect("failed to list queued items");
-    assert_eq!(queued.len(), 3, "expected 3 queued items, got {}", queued.len());
+    assert_eq!(
+        queued.len(),
+        3,
+        "expected 3 queued items, got {}",
+        queued.len()
+    );
 
     // Verify processed/{id}.txt files exist and have correct content.
     for item in &queued {
@@ -191,10 +199,7 @@ fn test_ingest_rejects_dmg_files() {
     assert_eq!(rejected.len(), 1, "expected 1 rejected item");
 
     // Verify the rejection reason mentions the extension.
-    let reason = rejected[0]
-        .error_message
-        .as_deref()
-        .unwrap_or("");
+    let reason = rejected[0].error_message.as_deref().unwrap_or("");
     assert!(
         reason.contains(".dmg") || reason.contains("non-operative"),
         "unexpected rejection reason: {reason}"
@@ -332,7 +337,9 @@ fn test_queue_to_wiki_workflow() {
 
     // claim_next_queued returns the item snapshot from before the status update;
     // verify the actual in-progress status by re-reading from the database.
-    let item_after_claim = queue.get_item(item.id).expect("get_item after claim failed");
+    let item_after_claim = queue
+        .get_item(item.id)
+        .expect("get_item after claim failed");
     assert_eq!(
         item_after_claim.status,
         ItemStatus::InProgress,
@@ -400,10 +407,7 @@ fn test_queue_to_wiki_workflow() {
         log.contains("## ["),
         "log.md should have timestamp entries starting with '## ['"
     );
-    assert!(
-        log.contains("Rust"),
-        "log.md should reference Rust"
-    );
+    assert!(log.contains("Rust"), "log.md should reference Rust");
 
     // Queue item is now Complete with the wiki page path recorded.
     let completed_item = queue.get_item(item.id).expect("get_item failed");

@@ -697,10 +697,7 @@ mod tests {
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err();
-        assert!(
-            msg.contains("999"),
-            "error should mention item ID: {msg}"
-        );
+        assert!(msg.contains("999"), "error should mention item ID: {msg}");
     }
 
     // ─── Wiki Tool Tests ──────────────────────────────────────────────────────
@@ -719,7 +716,11 @@ mod tests {
                 content: content.to_string(),
             }))
             .await;
-        assert!(write_result.is_ok(), "write_page failed: {:?}", write_result);
+        assert!(
+            write_result.is_ok(),
+            "write_page failed: {:?}",
+            write_result
+        );
 
         let read_result = server
             .read_page(Parameters(ReadPageRequest {
@@ -745,7 +746,11 @@ mod tests {
         assert!(result.is_ok(), "update_index failed: {:?}", result);
 
         let index_result = server.read_index().await;
-        assert!(index_result.is_ok(), "read_index failed: {:?}", index_result);
+        assert!(
+            index_result.is_ok(),
+            "read_index failed: {:?}",
+            index_result
+        );
         let index = index_result.unwrap();
         assert!(
             index.contains("- [[entities/rust]]"),
@@ -756,8 +761,8 @@ mod tests {
     #[tokio::test]
     async fn test_append_log() {
         use super::AppendLogRequest;
-        use rmcp::handler::server::wrapper::Parameters;
         use super::ReadPageRequest;
+        use rmcp::handler::server::wrapper::Parameters;
 
         let (server, _wiki_dir, _processed_dir) = make_server();
 
@@ -814,7 +819,11 @@ mod tests {
             .await;
         assert!(result.is_ok(), "list_pages failed: {:?}", result);
         let pages: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
-        assert!(pages.len() >= 3, "expected at least 3 pages, got {}", pages.len());
+        assert!(
+            pages.len() >= 3,
+            "expected at least 3 pages, got {}",
+            pages.len()
+        );
 
         // Filter by entities subdirectory — should have exactly 2
         let result = server

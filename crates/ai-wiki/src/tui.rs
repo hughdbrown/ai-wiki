@@ -83,10 +83,10 @@ fn run_app<B: Backend>(
         }
 
         // Expire status message after 5 seconds
-        if let Some((_, ts)) = &status_msg {
-            if ts.elapsed() >= Duration::from_secs(5) {
-                status_msg = None;
-            }
+        if let Some((_, ts)) = &status_msg
+            && ts.elapsed() >= Duration::from_secs(5)
+        {
+            status_msg = None;
         }
 
         let status_text = status_msg.as_ref().map(|(msg, _)| msg.as_str());
@@ -126,47 +126,40 @@ fn run_app<B: Backend>(
                         }
                     }
                     KeyCode::Enter => {
-                        if let Some(sel) = table_state.selected() {
-                            if let Some(item) = items.get(sel) {
-                                // Only open detail for terminal states
-                                match item.status {
-                                    ItemStatus::Complete
-                                    | ItemStatus::Error
-                                    | ItemStatus::Rejected => {
-                                        detail_scroll = 0;
-                                        view = View::Detail(item.clone());
-                                    }
-                                    _ => {} // no action for queued/in_progress
+                        if let Some(sel) = table_state.selected()
+                            && let Some(item) = items.get(sel)
+                        {
+                            // Only open detail for terminal states
+                            match item.status {
+                                ItemStatus::Complete | ItemStatus::Error | ItemStatus::Rejected => {
+                                    detail_scroll = 0;
+                                    view = View::Detail(item.clone());
                                 }
+                                _ => {} // no action for queued/in_progress
                             }
                         }
                     }
                     KeyCode::Char('R') => {
                         // Retry: requeue errored/rejected item from table view
-                        if let Some(sel) = table_state.selected() {
-                            if let Some(item) = items.get(sel) {
-                                if matches!(
-                                    item.status,
-                                    ItemStatus::Error | ItemStatus::Rejected
-                                ) {
-                                    match queue.requeue_item(item.id) {
-                                        Ok(()) => {
-                                            status_msg = Some((
-                                                format!("Item {} requeued", item.id),
-                                                Instant::now(),
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            status_msg = Some((
-                                                format!("Retry failed for item {}: {e}", item.id),
-                                                Instant::now(),
-                                            ));
-                                        }
-                                    }
-                                    last_refresh =
-                                        Instant::now() - Duration::from_secs(3);
+                        if let Some(sel) = table_state.selected()
+                            && let Some(item) = items.get(sel)
+                            && matches!(item.status, ItemStatus::Error | ItemStatus::Rejected)
+                        {
+                            match queue.requeue_item(item.id) {
+                                Ok(()) => {
+                                    status_msg = Some((
+                                        format!("Item {} requeued", item.id),
+                                        Instant::now(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    status_msg = Some((
+                                        format!("Retry failed for item {}: {e}", item.id),
+                                        Instant::now(),
+                                    ));
                                 }
                             }
+                            last_refresh = Instant::now() - Duration::from_secs(3);
                         }
                     }
                     _ => {}
@@ -177,10 +170,7 @@ fn run_app<B: Backend>(
                         last_refresh = Instant::now() - Duration::from_secs(3);
                     }
                     KeyCode::Char('R') => {
-                        if matches!(
-                            item.status,
-                            ItemStatus::Error | ItemStatus::Rejected
-                        ) {
+                        if matches!(item.status, ItemStatus::Error | ItemStatus::Rejected) {
                             match queue.requeue_item(item.id) {
                                 Ok(()) => {
                                     status_msg = Some((
@@ -243,9 +233,17 @@ fn draw_table(
     f.render_widget(status_para, chunks[0]);
 
     // Queue table
-    let header_cells = ["ID", "File", "Type", "Status", "Started", "Parent", "Wiki Page"]
-        .iter()
-        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).bold()));
+    let header_cells = [
+        "ID",
+        "File",
+        "Type",
+        "Status",
+        "Started",
+        "Parent",
+        "Wiki Page",
+    ]
+    .iter()
+    .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).bold()));
     let header = Row::new(header_cells).height(1).bottom_margin(0);
 
     let rows: Vec<Row> = items

@@ -478,9 +478,7 @@ impl Queue {
             Err(rusqlite::Error::FromSqlConversionFailure(
                 0,
                 rusqlite::types::Type::Text,
-                Box::new(std::io::Error::other(format!(
-                    "unparseable timestamp: {s}"
-                ))),
+                Box::new(std::io::Error::other(format!("unparseable timestamp: {s}"))),
             ))
         };
 

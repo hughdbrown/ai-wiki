@@ -387,8 +387,7 @@ fn walk_dir(dir: &Path, files: &mut Vec<PathBuf>, depth: usize) -> anyhow::Resul
 /// Strip matching leading and trailing single or double quotes from a string.
 fn strip_quotes(s: &str) -> &str {
     if s.len() >= 2
-        && ((s.starts_with('"') && s.ends_with('"'))
-            || (s.starts_with('\'') && s.ends_with('\'')))
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
     {
         &s[1..s.len() - 1]
     } else {

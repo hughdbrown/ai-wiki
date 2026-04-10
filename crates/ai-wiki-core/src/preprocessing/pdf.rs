@@ -211,9 +211,12 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))?;
     let page_prefix = temp_dir.join("page");
-    let page_prefix_str = page_prefix
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("temp dir path is not valid UTF-8: {}", page_prefix.display()))?;
+    let page_prefix_str = page_prefix.to_str().ok_or_else(|| {
+        anyhow::anyhow!(
+            "temp dir path is not valid UTF-8: {}",
+            page_prefix.display()
+        )
+    })?;
 
     // Render PDF pages to PPM images
     let status = super::run_tool(
@@ -260,8 +263,7 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
             }
         };
         let output = match super::run_tool_output(
-            Command::new(&config.tools.tesseract_path)
-                .args([page_img_str, "stdout"]),
+            Command::new(&config.tools.tesseract_path).args([page_img_str, "stdout"]),
             "tesseract",
         ) {
             Ok(o) => o,

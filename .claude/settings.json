@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ai-wiki": {
+      "command": "/Users/hughbrown/workspace/hughdbrown/rust/ai-wiki/target/debug/ai-wiki-mcp",
+      "args": [],
+      "env": {
+        "AI_WIKI_CONFIG": "/Users/hughbrown/workspace/hughdbrown/rust/ai-wiki/ai-wiki.toml"
+      }
+    }
+  }
+}
