@@ -6,7 +6,7 @@ use anyhow::Context;
 use ai_wiki_core::config::Config;
 use ai_wiki_core::queue::{ItemStatus, Queue};
 
-pub fn run(config: &Config, batch_size: usize) -> anyhow::Result<()> {
+pub fn run(config: &Config) -> anyhow::Result<()> {
     let queue = Queue::open(&config.paths.database_path).with_context(|| {
         format!(
             "failed to open queue database at {}",
@@ -20,13 +20,10 @@ pub fn run(config: &Config, batch_size: usize) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let to_process = queued_items.len().min(batch_size);
-    println!(
-        "Queue has {} item(s). Processing up to {to_process}.",
-        queued_items.len()
-    );
+    let total = queued_items.len();
+    println!("Queue has {total} item(s). Processing all.");
 
-    let prompt = build_prompt(config, to_process);
+    let prompt = build_prompt(config, total);
 
     println!("Launching Claude to process the queue...");
     println!();

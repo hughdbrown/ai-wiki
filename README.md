@@ -158,14 +158,10 @@ Ingest complete — queued: 500, rejected: 12, errors: 3, skipped: 279 (4m 23s)
 Processing invokes Claude to read the extracted text and build wiki pages.
 
 ```bash
-# Process 10 items (default)
 ai-wiki process
-
-# Process a larger batch
-ai-wiki process --batch 50
 ```
 
-For each queued item, Claude:
+This processes all queued items. For each item, Claude:
 1. Reads the extracted text
 2. Identifies entities, concepts, and claims
 3. Creates wiki pages with YAML frontmatter and `[[wikilinks]]`
