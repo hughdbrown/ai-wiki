@@ -32,6 +32,7 @@ pub struct RejectionConfig {
 pub struct ToolsConfig {
     pub qpdf_path: String,
     pub pdftotext_path: String,
+    pub pdftoppm_path: String,
     pub tesseract_path: String,
     pub ffmpeg_path: String,
     pub whisper_cpp_path: String,
@@ -63,6 +64,7 @@ impl Default for Config {
             tools: ToolsConfig {
                 qpdf_path: "qpdf".to_string(),
                 pdftotext_path: "pdftotext".to_string(),
+                pdftoppm_path: "pdftoppm".to_string(),
                 tesseract_path: "tesseract".to_string(),
                 ffmpeg_path: "ffmpeg".to_string(),
                 whisper_cpp_path: "whisper-cpp".to_string(),

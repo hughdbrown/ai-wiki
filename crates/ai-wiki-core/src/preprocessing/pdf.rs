@@ -100,6 +100,10 @@ pub fn split_pdf_chapters(
         return Ok(vec![path.to_path_buf()]);
     }
 
+    let mut page_starts = page_starts;
+    page_starts.sort();
+    page_starts.dedup();
+
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create output dir: {}", output_dir.display()))?;
 
@@ -164,33 +168,65 @@ pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> 
         }
     }
 
-    // Fallback to tesseract via Command
-    let temp_dir = std::env::temp_dir();
-    let output_base = temp_dir.join(format!(
-        "ai_wiki_ocr_{}_{}",
-        std::process::id(),
-        path.file_stem().and_then(|s| s.to_str()).unwrap_or("doc")
-    ));
-    let tesseract_status = Command::new(&config.tools.tesseract_path)
-        .arg(path)
-        .arg(&output_base)
-        .arg("pdf")
-        .arg("txt")
-        .status();
+    // Fallback: render PDF pages to images with pdftoppm, then OCR each with tesseract
+    match ocr_pdf_text(path, config) {
+        Ok(text) => return Ok(text),
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "failed to extract text from PDF: {} — all methods (pdf-extract, pdftotext, tesseract) failed: {}",
+                path.display(),
+                e
+            ))
+        }
+    }
+}
 
-    if let Ok(status) = tesseract_status
-        && status.success()
-    {
-        let txt_path = output_base.with_extension("txt");
-        if let Ok(text) = std::fs::read_to_string(&txt_path)
-            && !text.trim().is_empty()
-        {
-            return Ok(text);
+// OCR fallback: render pages to images, then tesseract each
+fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
+    let temp_dir = std::env::temp_dir().join(format!("ai_wiki_ocr_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir)?;
+
+    // Render PDF pages to PPM images
+    let status = Command::new(&config.tools.pdftoppm_path)
+        .args([
+            path.to_str().unwrap_or_default(),
+            temp_dir.join("page").to_str().unwrap_or_default(),
+        ])
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to run pdftoppm: {}", e))?;
+
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        anyhow::bail!("pdftoppm failed for {}", path.display());
+    }
+
+    // Find generated page images and OCR each
+    let mut full_text = String::new();
+    let mut pages: Vec<_> = std::fs::read_dir(&temp_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |ext| ext == "ppm"))
+        .collect();
+    pages.sort();
+
+    for page_img in &pages {
+        let output = Command::new(&config.tools.tesseract_path)
+            .args([page_img.to_str().unwrap_or_default(), "stdout"])
+            .output()
+            .map_err(|e| anyhow::anyhow!("failed to run tesseract: {}", e))?;
+
+        if output.status.success() {
+            full_text.push_str(&String::from_utf8_lossy(&output.stdout));
+            full_text.push('\n');
         }
     }
 
-    Err(anyhow::anyhow!(
-        "failed to extract text from PDF: {} — all methods (pdf-extract, pdftotext, tesseract) failed",
-        path.display()
-    ))
+    // Cleanup temp dir
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    if full_text.trim().is_empty() {
+        anyhow::bail!("OCR produced no text for {}", path.display());
+    }
+
+    Ok(full_text)
 }
