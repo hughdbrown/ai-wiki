@@ -270,11 +270,23 @@ impl WikiServer {
         Parameters(req): Parameters<ReadSourceRequest>,
     ) -> Result<String, String> {
         let config = self.config.clone();
+        let queue = self.queue.clone();
         tokio::task::spawn_blocking(move || {
+            // Verify item exists in queue before reading
+            {
+                let queue = queue.lock().map_err(|e| format!("lock error: {e}"))?;
+                queue
+                    .get_item(req.id)
+                    .map_err(|e| format!("item {}: {e}", req.id))?;
+            }
             let processed_dir = &config.paths.processed_dir;
             let path = processed_dir.join(format!("{}.txt", req.id));
-            std::fs::read_to_string(&path)
-                .map_err(|e| format!("Failed to read {}: {e}", path.display()))
+            std::fs::read_to_string(&path).map_err(|_| {
+                format!(
+                    "failed to read processed text for item {}: file not found or unreadable",
+                    req.id
+                )
+            })
         })
         .await
         .map_err(|e| format!("task join error: {e}"))?

@@ -70,12 +70,22 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
 
 // ─── Per-file processing ──────────────────────────────────────────────────────
 
+const MAX_RECURSION_DEPTH: usize = 3;
+
 fn process_file(
     path: &Path,
     config: &Config,
     queue: &Queue,
     parent_id: Option<i64>,
+    depth: usize,
 ) -> anyhow::Result<IngestResult> {
+    if depth > MAX_RECURSION_DEPTH {
+        anyhow::bail!(
+            "maximum nesting depth ({MAX_RECURSION_DEPTH}) exceeded for {}",
+            path.display()
+        );
+    }
+
     let mut result = IngestResult::default();
 
     // Skip files that have already been enqueued
@@ -105,7 +115,7 @@ fn process_file(
             match extract_zip(path, &extract_dir) {
                 Ok(extracted) => {
                     for child_path in &extracted {
-                        match process_file(child_path, config, queue, Some(id)) {
+                        match process_file(child_path, config, queue, Some(id), depth + 1) {
                             Ok(child_result) => result.merge(child_result),
                             Err(e) => {
                                 eprintln!(

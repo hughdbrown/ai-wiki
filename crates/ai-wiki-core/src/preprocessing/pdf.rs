@@ -199,18 +199,35 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
 
     // Find generated page images and OCR each
     let mut full_text = String::new();
-    let mut pages: Vec<_> = std::fs::read_dir(&temp_dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|ext| ext == "ppm"))
-        .collect();
-    pages.sort();
+    let pages_result: anyhow::Result<Vec<_>> = (|| {
+        let mut pages: Vec<_> = std::fs::read_dir(&temp_dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "ppm"))
+            .collect();
+        pages.sort();
+        Ok(pages)
+    })();
+
+    let pages = match pages_result {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(e);
+        }
+    };
 
     for page_img in &pages {
-        let output = Command::new(&config.tools.tesseract_path)
+        let output = match Command::new(&config.tools.tesseract_path)
             .args([page_img.to_str().unwrap_or_default(), "stdout"])
             .output()
-            .map_err(|e| anyhow::anyhow!("failed to run tesseract: {}", e))?;
+        {
+            Ok(o) => o,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(anyhow::anyhow!("failed to run tesseract: {}", e));
+            }
+        };
 
         if output.status.success() {
             full_text.push_str(&String::from_utf8_lossy(&output.stdout));
@@ -218,7 +235,7 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
         }
     }
 
-    // Cleanup temp dir
+    // Cleanup temp dir (success path)
     let _ = std::fs::remove_dir_all(&temp_dir);
 
     if full_text.trim().is_empty() {

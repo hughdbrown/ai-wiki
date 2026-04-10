@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
+const MAX_DECOMPRESSED_SIZE: u64 = 1_073_741_824; // 1 GB
+const MAX_ENTRIES: usize = 10_000;
+
 pub fn extract_zip(zip_path: &Path, output_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let file = fs::File::open(zip_path)
         .with_context(|| format!("failed to open zip file: {}", zip_path.display()))?;
@@ -15,6 +18,7 @@ pub fn extract_zip(zip_path: &Path, output_dir: &Path) -> anyhow::Result<Vec<Pat
         .with_context(|| format!("failed to create output dir: {}", output_dir.display()))?;
 
     let mut extracted_paths = Vec::new();
+    let mut total_bytes: u64 = 0;
 
     for i in 0..archive.len() {
         let mut entry = archive
@@ -44,10 +48,22 @@ pub fn extract_zip(zip_path: &Path, output_dir: &Path) -> anyhow::Result<Vec<Pat
         let mut dest_file = fs::File::create(&dest_path)
             .with_context(|| format!("failed to create file: {}", dest_path.display()))?;
 
-        io::copy(&mut entry, &mut dest_file)
+        let bytes_written = io::copy(&mut entry, &mut dest_file)
             .with_context(|| format!("failed to extract entry to: {}", dest_path.display()))?;
 
+        total_bytes += bytes_written;
+        if total_bytes > MAX_DECOMPRESSED_SIZE {
+            anyhow::bail!(
+                "ZIP extraction aborted: decompressed size exceeds {} bytes",
+                MAX_DECOMPRESSED_SIZE
+            );
+        }
+
         extracted_paths.push(dest_path);
+
+        if extracted_paths.len() > MAX_ENTRIES {
+            anyhow::bail!("ZIP extraction aborted: more than {} entries", MAX_ENTRIES);
+        }
     }
 
     Ok(extracted_paths)

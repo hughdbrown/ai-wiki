@@ -130,6 +130,9 @@ impl Wiki {
         "# Wiki Index\n\n## Entities\n\n## Concepts\n\n## Claims\n\n## Sources\n".to_string()
     }
 
+    /// Generate default CLAUDE.md wiki schema.
+    /// NOTE: Tool names referenced here must match the MCP server tool definitions
+    /// in crates/ai-wiki-mcp/src/main.rs. Update both if renaming tools.
     fn default_claude_md() -> String {
         r#"# AI Wiki Schema
 
