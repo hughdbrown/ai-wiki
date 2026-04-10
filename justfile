@@ -46,6 +46,10 @@ ingest path:
 ingest-list listfile:
     cargo run -p ai-wiki -- ingest "@{{listfile}}"
 
+# Process queued items using Claude (default: 10 items)
+process batch="10":
+    cargo run -p ai-wiki -- process --batch {{batch}}
+
 # Launch the TUI monitor
 tui:
     cargo run -p ai-wiki -- tui

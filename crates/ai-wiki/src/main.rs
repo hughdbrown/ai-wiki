@@ -1,4 +1,5 @@
 mod ingest;
+mod process;
 mod tui;
 
 use clap::{Parser, Subcommand};
@@ -24,6 +25,12 @@ enum Commands {
     },
     /// Launch the TUI to monitor queue status
     Tui,
+    /// Process queued items using Claude to build wiki pages
+    Process {
+        /// Maximum number of items to process in this batch
+        #[arg(short, long, default_value = "10")]
+        batch: usize,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -42,5 +49,6 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Ingest { path } => ingest::run(&config, &path),
         Commands::Tui => tui::run(&config),
+        Commands::Process { batch } => process::run(&config, batch),
     }
 }
