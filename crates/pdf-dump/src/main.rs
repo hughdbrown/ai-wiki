@@ -15,8 +15,8 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("file not found: {}", path.display());
     }
 
-    let doc = Document::load(path)
-        .with_context(|| format!("failed to load PDF: {}", path.display()))?;
+    let doc =
+        Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
 
     let page_count = doc.get_pages().len();
     println!("File: {}", path.display());
@@ -82,7 +82,11 @@ fn main() -> anyhow::Result<()> {
     page_starts.dedup();
 
     println!("═══════════════════════════════════════════════════════════════════");
-    println!("SPLIT BLOCKS ({} chapters from {} top-level entries)", page_starts.len(), top_level.len());
+    println!(
+        "SPLIT BLOCKS ({} chapters from {} top-level entries)",
+        page_starts.len(),
+        top_level.len()
+    );
     println!("═══════════════════════════════════════════════════════════════════");
     println!();
     println!(
@@ -110,7 +114,11 @@ fn main() -> anyhow::Result<()> {
         println!(
             "  {:>5}  {:<50} {:>8}  {:>8}  {:>5}",
             i + 1,
-            if title.len() > 50 { &title[..50] } else { title },
+            if title.len() > 50 {
+                &title[..50]
+            } else {
+                title
+            },
             start,
             end,
             page_span
@@ -123,7 +131,11 @@ fn main() -> anyhow::Result<()> {
         "Book detection: {} top-level entries, {} pages → {}",
         top_level.len(),
         page_count,
-        if page_count >= 50 { "BOOK (would split)" } else { "SIMPLE (too few pages)" }
+        if page_count >= 50 {
+            "BOOK (would split)"
+        } else {
+            "SIMPLE (too few pages)"
+        }
     );
 
     // Also show what the current code does differently:
@@ -152,7 +164,10 @@ fn main() -> anyhow::Result<()> {
 
     if all_deduped.len() != page_starts.len() {
         println!();
-        println!("  ⚠ MISMATCH: The current code would create {} split blocks", all_deduped.len());
+        println!(
+            "  ⚠ MISMATCH: The current code would create {} split blocks",
+            all_deduped.len()
+        );
         println!("    because it uses ALL outline destinations, not just top-level.");
         println!("    This means sub-chapters create extra splits.");
     }

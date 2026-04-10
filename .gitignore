@@ -3,7 +3,6 @@ target/
 *.db-wal
 *.db-shm
 processed/
-wiki/claims/
-wiki/concepts/
-wiki/source/
-
+raw/pdf_*/
+raw/zip_*/
+raw/audio_*/

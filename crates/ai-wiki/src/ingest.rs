@@ -345,13 +345,13 @@ fn transcribe_source(
     fs::write(&dest, transcript)
         .with_context(|| format!("failed to write transcript to {}", dest.display()))?;
 
-    if let Some(dir) = cleanup_dir {
-        if let Err(e) = fs::remove_dir_all(&dir) {
-            eprintln!(
-                "Warning: failed to clean up audio extract dir {}: {e:#}",
-                dir.display()
-            );
-        }
+    if let Some(dir) = cleanup_dir
+        && let Err(e) = fs::remove_dir_all(&dir)
+    {
+        eprintln!(
+            "Warning: failed to clean up audio extract dir {}: {e:#}",
+            dir.display()
+        );
     }
 
     Ok(())

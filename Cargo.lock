@@ -46,6 +46,7 @@ version = "0.1.0"
 dependencies = [
  "ai-wiki-core",
  "anyhow",
+ "chrono",
  "clap",
  "crossterm",
  "glob",

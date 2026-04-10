@@ -6,9 +6,20 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "ai-wiki", version, about = "AI-powered wiki builder")]
+#[command(
+    name = "ai-wiki",
+    version,
+    about = "AI-powered wiki builder",
+    long_about = "Build and maintain a personal knowledge base by having an LLM incrementally\n\
+                  process your documents into an interlinked Obsidian wiki.\n\n\
+                  Workflow:\n  \
+                  1. ai-wiki ingest <sources>   — classify, extract text, queue for processing\n  \
+                  2. ai-wiki process            — invoke Claude to build wiki pages\n  \
+                  3. ai-wiki tui                — monitor queue status in a terminal UI\n\n\
+                  See 'ai-wiki help <command>' for details on each command."
+)]
 struct Cli {
-    /// Path to config file
+    /// Path to config file [created with defaults if missing]
     #[arg(long, default_value = "ai-wiki.toml")]
     config: PathBuf,
 
@@ -19,14 +30,77 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Ingest source files into the processing queue
+    #[command(
+        long_about = "Reads source files, classifies them by type, extracts text, and adds them\n\
+                      to the processing queue. No LLM is involved — this is pure preprocessing.\n\n\
+                      Supported file types:\n  \
+                      - PDF: text extracted via pdf-extract, pdftotext, or OCR. Books (with\n    \
+                        outlines and 50+ pages) are split into chapters automatically.\n  \
+                      - Markdown/Text: copied directly to the processed directory.\n  \
+                      - ZIP: extracted and each contained file processed recursively.\n  \
+                      - Audio/Video: audio extracted with ffmpeg, transcribed with whisper-cpp.\n  \
+                      - .dmg and other non-operative types: rejected immediately.\n\n\
+                      Duplicate files are detected and skipped automatically.\n\n\
+                      Examples:\n  \
+                      ai-wiki ingest ~/Downloads/paper.pdf\n  \
+                      ai-wiki ingest ~/Downloads/rust-books/\n  \
+                      ai-wiki ingest \"~/Downloads/*.pdf\"\n  \
+                      ai-wiki ingest @my-reading-list.txt"
+    )]
     Ingest {
-        /// File, glob pattern, or directory to ingest
+        /// File path, directory, glob pattern, or @filelist to ingest
+        ///
+        /// Use @filename to read a list of files (one per line, # comments allowed,
+        /// quoted paths are supported).
         path: String,
     },
+
     /// Launch the TUI to monitor queue status
+    #[command(
+        long_about = "Opens a terminal UI showing all queue items with color-coded status:\n  \
+                      Gray = queued, Yellow = in progress, Green = complete, Red = error/rejected.\n\n\
+                      Keyboard:\n  \
+                      ↑/↓     Navigate items\n  \
+                      Enter   View details (error message, rejection reason, or wiki page content)\n  \
+                      R       Retry an errored/rejected item (requeue it)\n  \
+                      r       Force refresh\n  \
+                      q/Esc   Quit"
+    )]
     Tui,
+
     /// Process all queued items using Claude to build wiki pages
+    #[command(
+        long_about = "Invokes the Claude CLI to process every queued item in the database.\n\
+                      Claude reads each item's extracted text, identifies entities, concepts,\n\
+                      and claims, creates wiki pages with YAML frontmatter and [[wikilinks]],\n\
+                      updates the index and log, and marks items complete.\n\n\
+                      Requires the 'claude' CLI to be installed and on PATH.\n\n\
+                      Book parents (items with chapters) are summarized from their children's text."
+    )]
     Process,
+
+    /// Retry errored items that have processed text available
+    #[command(
+        long_about = "Requeues errored items that have extracted text in the processed directory,\n\
+                      then runs 'process' to have Claude build their wiki pages.\n\n\
+                      This is for items where text extraction succeeded but wiki page creation\n\
+                      failed (e.g., Claude timeout, network error). Items without processed text\n\
+                      are left as errors — use 'clear' to remove them, then re-ingest."
+    )]
+    Retry,
+
+    /// Remove all errored items from the queue
+    #[command(
+        long_about = "Deletes all items with 'error' status from the queue database.\n\
+                      Use this to clean up items that failed text extraction and cannot be\n\
+                      retried without re-ingesting the original files.\n\n\
+                      After clearing, you can re-ingest the original files:\n  \
+                      ai-wiki clear\n  \
+                      ai-wiki ingest ~/Downloads/*.pdf\n\n\
+                      The dedup check will skip files that were already successfully processed\n\
+                      and only pick up the ones that previously failed."
+    )]
+    Clear,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -46,5 +120,64 @@ fn main() -> anyhow::Result<()> {
         Commands::Ingest { path } => ingest::run(&config, &path),
         Commands::Tui => tui::run(&config),
         Commands::Process => process::run(&config),
+        Commands::Retry => retry(&config),
+        Commands::Clear => clear(&config),
     }
+}
+
+fn retry(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
+    let queue = ai_wiki_core::queue::Queue::open(&config.paths.database_path)?;
+
+    let error_items = queue.list_items(Some(&ai_wiki_core::queue::ItemStatus::Error))?;
+    if error_items.is_empty() {
+        println!("No errored items to retry.");
+        return Ok(());
+    }
+
+    let mut retried = 0usize;
+    let mut skipped = 0usize;
+
+    for item in &error_items {
+        let processed_path = config.paths.processed_dir.join(format!("{}.txt", item.id));
+        if processed_path.exists() {
+            queue.requeue_item(item.id)?;
+            retried += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+
+    println!("Retry: {retried} item(s) requeued, {skipped} skipped (no processed text).");
+
+    if retried > 0 {
+        println!("Running process to build wiki pages...");
+        println!();
+        process::run(config)?;
+    }
+
+    Ok(())
+}
+
+fn clear(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
+    let queue = ai_wiki_core::queue::Queue::open(&config.paths.database_path)?;
+
+    let error_items = queue.list_items(Some(&ai_wiki_core::queue::ItemStatus::Error))?;
+    if error_items.is_empty() {
+        println!("No errored items to clear.");
+        return Ok(());
+    }
+
+    let count = error_items.len();
+
+    // Delete error items from the database
+    let deleted = queue.delete_errors()?;
+
+    println!("Cleared {deleted} errored item(s) from the queue.");
+    if deleted != count as u64 {
+        println!("  (expected {count}, deleted {deleted})");
+    }
+    println!("You can now re-ingest the original files:");
+    println!("  ai-wiki ingest <path>");
+
+    Ok(())
 }

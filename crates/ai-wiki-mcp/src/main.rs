@@ -129,10 +129,8 @@ impl WikiServer {
                 .claim_next_queued()
                 .map_err(|e| format!("Queue error: {e}"))?;
             match item {
-                Some(item) => {
-                    Ok(serde_json::to_string(&item_to_json(&item))
-                        .map_err(|e| format!("JSON error: {e}"))?)
-                }
+                Some(item) => Ok(serde_json::to_string(&item_to_json(&item))
+                    .map_err(|e| format!("JSON error: {e}"))?),
                 None => Ok("null".to_string()),
             }
         })

@@ -294,6 +294,20 @@ impl Queue {
         Ok(())
     }
 
+    /// Delete all items with status `Error` from the queue.
+    pub fn delete_errors(&self) -> Result<u64, QueueError> {
+        // First delete children of error parents, then delete the error items themselves
+        let child_rows = self.conn.execute(
+            "DELETE FROM queue_items WHERE parent_id IN (SELECT id FROM queue_items WHERE status = ?1)",
+            params![ItemStatus::Error.as_str()],
+        )?;
+        let rows = self.conn.execute(
+            "DELETE FROM queue_items WHERE status = ?1",
+            params![ItemStatus::Error.as_str()],
+        )?;
+        Ok((child_rows + rows) as u64)
+    }
+
     // ─── Read operations ──────────────────────────────────────────────────────
 
     /// Retrieve a single item by its id.
