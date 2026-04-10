@@ -172,12 +172,18 @@ impl Queue {
         file_type: FileType,
         parent_id: Option<i64>,
     ) -> Result<i64, QueueError> {
+        let path_str = file_path.to_str().ok_or_else(|| {
+            QueueError::InvalidStatus(format!(
+                "path is not valid UTF-8: {}",
+                file_path.display()
+            ))
+        })?;
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO queue_items (file_path, file_type, status, parent_id, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
-                file_path.to_string_lossy().as_ref(),
+                path_str,
                 file_type.as_str(),
                 ItemStatus::Queued.as_str(),
                 parent_id,
@@ -374,8 +380,16 @@ impl Queue {
     }
 
     /// Return `true` if every child of `parent_id` has status `Complete`.
-    /// Also returns `true` if there are no children at all.
+    /// Returns `false` if there are no children (avoids vacuous-truth surprises).
     pub fn all_children_complete(&self, parent_id: i64) -> Result<bool, QueueError> {
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM queue_items WHERE parent_id = ?1",
+            params![parent_id],
+            |row| row.get(0),
+        )?;
+        if total == 0 {
+            return Ok(false);
+        }
         let incomplete: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM queue_items
              WHERE parent_id = ?1 AND status != ?2",

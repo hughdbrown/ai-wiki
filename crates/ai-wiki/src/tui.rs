@@ -163,7 +163,7 @@ fn draw(
 
             let parent = item.parent_id.map(|id| id.to_string()).unwrap_or_default();
 
-            let wiki_page = item.wiki_page_path.clone().unwrap_or_default();
+            let wiki_page = item.wiki_page_path.as_deref().unwrap_or("");
 
             let file_name = item
                 .file_path

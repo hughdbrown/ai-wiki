@@ -56,15 +56,16 @@ pub fn transcribe_audio(audio_path: &Path, config: &Config) -> anyhow::Result<St
         .output()
         .with_context(|| format!("failed to run whisper-cpp on: {}", audio_path.display()))?;
 
-    if output.status.success() {
-        // whisper-cpp may write to stdout
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        if !stdout.trim().is_empty() {
-            return Ok(stdout);
-        }
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "whisper-cpp failed for {}: {}",
+            audio_path.display(),
+            stderr
+        ));
     }
 
-    // Fallback: read from the .wav.txt output file whisper-cpp creates alongside the audio
+    // whisper-cpp with --output-txt typically writes to <input>.txt; check that first
     let txt_path = {
         let mut p = audio_path.to_path_buf();
         let new_name = format!(
@@ -84,16 +85,14 @@ pub fn transcribe_audio(audio_path: &Path, config: &Config) -> anyhow::Result<St
                 txt_path.display()
             )
         })?;
+        let _ = std::fs::remove_file(&txt_path); // cleanup sidecar file
         return Ok(text);
     }
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!(
-            "whisper-cpp failed for {}: {}",
-            audio_path.display(),
-            stderr
-        ));
+    // Fallback: some versions of whisper-cpp write transcript to stdout
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !stdout.trim().is_empty() {
+        return Ok(stdout);
     }
 
     Err(anyhow::anyhow!(

@@ -215,10 +215,13 @@ Actions: `ingest`, `update`, `query`, `lint`
                 anyhow::anyhow!("Failed to read directory entry in {}: {}", dir.display(), e)
             })?;
             let path = entry.path();
+            let file_type = entry.file_type().map_err(|e| {
+                anyhow::anyhow!("Failed to get file type in {}: {}", dir.display(), e)
+            })?;
 
-            if path.is_dir() {
+            if file_type.is_dir() {
                 Self::collect_md_files(&path, root, pages)?;
-            } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+            } else if file_type.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
                 let relative = path
                     .strip_prefix(root)
                     .map_err(|e| {
