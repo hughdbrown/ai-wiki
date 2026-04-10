@@ -215,10 +215,17 @@ fn queue_cmd(config: &ai_wiki_core::config::Config, cmd: QueueCommands) -> anyho
         QueueCommands::Claim => {
             match queue.claim_next_queued()? {
                 Some(item) => {
+                    let file_path_str = item.file_path.display().to_string();
+                    if file_path_str.contains('\t') {
+                        anyhow::bail!(
+                            "Claimed file path contains a tab character, which would break \
+                             the tab-delimited output format: {file_path_str:?}"
+                        );
+                    }
                     println!(
                         "{}\t{}\t{}\t{}",
                         item.id,
-                        item.file_path.display(),
+                        file_path_str,
                         item.file_type.as_str(),
                         item.parent_id.map_or("none".to_owned(), |pid| pid.to_string()),
                     );

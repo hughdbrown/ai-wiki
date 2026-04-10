@@ -114,7 +114,7 @@ fn build_prompt(config: &Config, config_path: &str, total: usize) -> String {
 - **Wiki directory:** {wiki_dir}
 - **Processed text directory:** {processed_dir}
 - **Total items:** {total}
-- **CLI binary:** `ai-wiki --config {config_path}`
+- **CLI binary:** `ai-wiki --config '{config_path}'`
 
 ## Instructions
 
@@ -122,7 +122,7 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
 
 1. **Claim the next item:**
    ```bash
-   ai-wiki --config {config_path} queue claim
+   ai-wiki --config '{config_path}' queue claim
    ```
    This atomically claims the oldest queued item and prints its details as tab-separated fields:
    `<ID>\t<file_path>\t<file_type>\t<parent_id_or_none>`
@@ -132,7 +132,7 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
    - If the item has children (it's a book parent), read the children's processed text instead.
    - If no text is available, mark as error and move to the next item:
      ```bash
-     ai-wiki --config {config_path} queue error <ID> "No processed text available"
+     ai-wiki --config '{config_path}' queue error <ID> "No processed text available"
      ```
 
 3. **Extract knowledge** from the text:
@@ -163,7 +163,7 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
 
 7. **Mark complete:**
    ```bash
-   ai-wiki --config {config_path} queue complete <ID> "sources/<slug>.md"
+   ai-wiki --config '{config_path}' queue complete <ID> "sources/<slug>.md"
    ```
    For book parents, also mark all children complete with the same wiki_page_path.
 
@@ -201,9 +201,9 @@ mod tests {
         let config = Config::default();
         let prompt = build_prompt(&config, "my-config.toml", 5);
 
-        assert!(prompt.contains("ai-wiki --config my-config.toml queue claim"));
-        assert!(prompt.contains("ai-wiki --config my-config.toml queue complete"));
-        assert!(prompt.contains("ai-wiki --config my-config.toml queue error"));
+        assert!(prompt.contains("ai-wiki --config 'my-config.toml' queue claim"));
+        assert!(prompt.contains("ai-wiki --config 'my-config.toml' queue complete"));
+        assert!(prompt.contains("ai-wiki --config 'my-config.toml' queue error"));
         assert!(prompt.contains("**Total items:** 5"));
         assert!(prompt.contains(&config.paths.wiki_dir.display().to_string()));
         assert!(prompt.contains(&config.paths.processed_dir.display().to_string()));
