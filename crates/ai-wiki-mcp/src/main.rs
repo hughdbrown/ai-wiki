@@ -122,23 +122,28 @@ impl WikiServer {
         description = "Get the next queued item and mark it as in_progress. Returns JSON with item details or null if queue is empty."
     )]
     async fn get_next_item(&self) -> Result<String, String> {
-        let queue = self.queue.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let item = queue
-            .get_next_queued()
-            .map_err(|e| format!("Queue error: {e}"))?;
-        match item {
-            Some(item) => {
-                queue
-                    .mark_in_progress(item.id)
-                    .map_err(|e| format!("Failed to mark in_progress: {e}"))?;
-                let updated = queue
-                    .get_item(item.id)
-                    .map_err(|e| format!("Failed to re-read item: {e}"))?;
-                Ok(serde_json::to_string_pretty(&item_to_json(&updated))
-                    .map_err(|e| format!("JSON error: {e}"))?)
+        let queue = self.queue.clone();
+        tokio::task::spawn_blocking(move || {
+            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
+            let item = queue
+                .get_next_queued()
+                .map_err(|e| format!("Queue error: {e}"))?;
+            match item {
+                Some(item) => {
+                    queue
+                        .mark_in_progress(item.id)
+                        .map_err(|e| format!("Failed to mark in_progress: {e}"))?;
+                    let updated = queue
+                        .get_item(item.id)
+                        .map_err(|e| format!("Failed to re-read item: {e}"))?;
+                    Ok(serde_json::to_string_pretty(&item_to_json(&updated))
+                        .map_err(|e| format!("JSON error: {e}"))?)
+                }
+                None => Ok("null".to_string()),
             }
-            None => Ok("null".to_string()),
-        }
+        })
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// Mark a queue item as complete with the path to its wiki page.
@@ -149,29 +154,34 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<CompleteItemRequest>,
     ) -> Result<String, String> {
-        let queue = self.queue.lock().map_err(|e| format!("Lock error: {e}"))?;
-        queue
-            .mark_complete(req.id, &req.wiki_page_path)
-            .map_err(|e| format!("Failed to mark complete: {e}"))?;
-
-        let item = queue
-            .get_item(req.id)
-            .map_err(|e| format!("Failed to read item: {e}"))?;
-
-        let all_siblings_complete = if let Some(parent_id) = item.parent_id {
+        let queue = self.queue.clone();
+        tokio::task::spawn_blocking(move || {
+            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
             queue
-                .all_children_complete(parent_id)
-                .map_err(|e| format!("Failed to check siblings: {e}"))?
-        } else {
-            true
-        };
+                .mark_complete(req.id, &req.wiki_page_path)
+                .map_err(|e| format!("Failed to mark complete: {e}"))?;
 
-        Ok(serde_json::json!({
-            "status": "complete",
-            "id": req.id,
-            "all_siblings_complete": all_siblings_complete,
+            let item = queue
+                .get_item(req.id)
+                .map_err(|e| format!("Failed to read item: {e}"))?;
+
+            let all_siblings_complete = if let Some(parent_id) = item.parent_id {
+                queue
+                    .all_children_complete(parent_id)
+                    .map_err(|e| format!("Failed to check siblings: {e}"))?
+            } else {
+                true
+            };
+
+            Ok(serde_json::json!({
+                "status": "complete",
+                "id": req.id,
+                "all_siblings_complete": all_siblings_complete,
+            })
+            .to_string())
         })
-        .to_string())
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// Mark a queue item as rejected with a reason.
@@ -182,15 +192,20 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<RejectItemRequest>,
     ) -> Result<String, String> {
-        let queue = self.queue.lock().map_err(|e| format!("Lock error: {e}"))?;
-        queue
-            .mark_rejected(req.id, &req.reason)
-            .map_err(|e| format!("Failed to mark rejected: {e}"))?;
-        Ok(serde_json::json!({
-            "status": "rejected",
-            "id": req.id,
+        let queue = self.queue.clone();
+        tokio::task::spawn_blocking(move || {
+            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
+            queue
+                .mark_rejected(req.id, &req.reason)
+                .map_err(|e| format!("Failed to mark rejected: {e}"))?;
+            Ok(serde_json::json!({
+                "status": "rejected",
+                "id": req.id,
+            })
+            .to_string())
         })
-        .to_string())
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// Mark a queue item as errored with an error message.
@@ -199,15 +214,20 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ErrorItemRequest>,
     ) -> Result<String, String> {
-        let queue = self.queue.lock().map_err(|e| format!("Lock error: {e}"))?;
-        queue
-            .mark_error(req.id, &req.message)
-            .map_err(|e| format!("Failed to mark error: {e}"))?;
-        Ok(serde_json::json!({
-            "status": "error",
-            "id": req.id,
+        let queue = self.queue.clone();
+        tokio::task::spawn_blocking(move || {
+            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
+            queue
+                .mark_error(req.id, &req.message)
+                .map_err(|e| format!("Failed to mark error: {e}"))?;
+            Ok(serde_json::json!({
+                "status": "error",
+                "id": req.id,
+            })
+            .to_string())
         })
-        .to_string())
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// List queue items, optionally filtered by status.
@@ -218,19 +238,25 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ListItemsRequest>,
     ) -> Result<String, String> {
-        let queue = self.queue.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let status_filter: Option<ItemStatus> = match &req.status {
-            Some(s) => {
-                let parsed = ItemStatus::parse(s).ok_or_else(|| format!("Invalid status: {s}"))?;
-                Some(parsed)
-            }
-            None => None,
-        };
-        let items = queue
-            .list_items(status_filter.as_ref())
-            .map_err(|e| format!("Queue error: {e}"))?;
-        let json_items: Vec<serde_json::Value> = items.iter().map(item_to_json).collect();
-        serde_json::to_string_pretty(&json_items).map_err(|e| format!("JSON error: {e}"))
+        let queue = self.queue.clone();
+        tokio::task::spawn_blocking(move || {
+            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
+            let status_filter: Option<ItemStatus> = match &req.status {
+                Some(s) => {
+                    let parsed =
+                        ItemStatus::parse(s).ok_or_else(|| format!("Invalid status: {s}"))?;
+                    Some(parsed)
+                }
+                None => None,
+            };
+            let items = queue
+                .list_items(status_filter.as_ref())
+                .map_err(|e| format!("Queue error: {e}"))?;
+            let json_items: Vec<serde_json::Value> = items.iter().map(item_to_json).collect();
+            serde_json::to_string_pretty(&json_items).map_err(|e| format!("JSON error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     // ─── Source Tools ────────────────────────────────────────────────────────
@@ -243,10 +269,15 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ReadSourceRequest>,
     ) -> Result<String, String> {
-        let processed_dir = &self.config.paths.processed_dir;
-        let path = processed_dir.join(format!("{}.txt", req.id));
-        std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read {}: {e}", path.display()))
+        let config = self.config.clone();
+        tokio::task::spawn_blocking(move || {
+            let processed_dir = &config.paths.processed_dir;
+            let path = processed_dir.join(format!("{}.txt", req.id));
+            std::fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read {}: {e}", path.display()))
+        })
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     // ─── Wiki Tools ──────────────────────────────────────────────────────────
@@ -257,7 +288,10 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ReadPageRequest>,
     ) -> Result<String, String> {
-        self.wiki.read_page(&req.path).map_err(|e| format!("{e}"))
+        let wiki = self.wiki.clone();
+        tokio::task::spawn_blocking(move || wiki.read_page(&req.path).map_err(|e| format!("{e}")))
+            .await
+            .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// Write content to a wiki page.
@@ -268,10 +302,14 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<WritePageRequest>,
     ) -> Result<String, String> {
-        self.wiki
-            .write_page(&req.path, &req.content)
-            .map_err(|e| format!("{e}"))?;
-        Ok(format!("Wrote wiki page: {}", req.path))
+        let wiki = self.wiki.clone();
+        tokio::task::spawn_blocking(move || {
+            wiki.write_page(&req.path, &req.content)
+                .map_err(|e| format!("{e}"))?;
+            Ok(format!("Wrote wiki page: {}", req.path))
+        })
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// List wiki pages, optionally within a subdirectory.
@@ -282,17 +320,24 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ListPagesRequest>,
     ) -> Result<String, String> {
-        let pages = self
-            .wiki
-            .list_pages(req.directory.as_deref())
-            .map_err(|e| format!("{e}"))?;
-        serde_json::to_string_pretty(&pages).map_err(|e| format!("JSON error: {e}"))
+        let wiki = self.wiki.clone();
+        tokio::task::spawn_blocking(move || {
+            let pages = wiki
+                .list_pages(req.directory.as_deref())
+                .map_err(|e| format!("{e}"))?;
+            serde_json::to_string_pretty(&pages).map_err(|e| format!("JSON error: {e}"))
+        })
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// Read the wiki index page.
     #[tool(description = "Read the wiki index.md file.")]
     async fn read_index(&self) -> Result<String, String> {
-        self.wiki.read_index().map_err(|e| format!("{e}"))
+        let wiki = self.wiki.clone();
+        tokio::task::spawn_blocking(move || wiki.read_index().map_err(|e| format!("{e}")))
+            .await
+            .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// Append an entry to the wiki index.
@@ -301,10 +346,13 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<UpdateIndexRequest>,
     ) -> Result<String, String> {
-        self.wiki
-            .update_index(&req.entry)
-            .map_err(|e| format!("{e}"))?;
-        Ok(format!("Updated index with: {}", req.entry))
+        let wiki = self.wiki.clone();
+        tokio::task::spawn_blocking(move || {
+            wiki.update_index(&req.entry).map_err(|e| format!("{e}"))?;
+            Ok(format!("Updated index with: {}", req.entry))
+        })
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// Append a timestamped entry to the wiki log.
@@ -313,10 +361,13 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<AppendLogRequest>,
     ) -> Result<String, String> {
-        self.wiki
-            .append_log(&req.entry)
-            .map_err(|e| format!("{e}"))?;
-        Ok(format!("Logged: {}", req.entry))
+        let wiki = self.wiki.clone();
+        tokio::task::spawn_blocking(move || {
+            wiki.append_log(&req.entry).map_err(|e| format!("{e}"))?;
+            Ok(format!("Logged: {}", req.entry))
+        })
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 }
 
@@ -346,6 +397,14 @@ async fn main() -> Result<()> {
     };
 
     let queue = Queue::open(&config.paths.database_path)?;
+
+    let reset_count = queue
+        .reset_in_progress()
+        .map_err(|e| anyhow::anyhow!("failed to reset in-progress items: {e}"))?;
+    if reset_count > 0 {
+        eprintln!("Reset {reset_count} in-progress item(s) back to queued.");
+    }
+
     let wiki = Wiki::new(config.paths.wiki_dir.clone());
     wiki.init()?;
 
