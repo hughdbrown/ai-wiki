@@ -20,20 +20,21 @@ pub fn extract_audio(
 
     let output_path = output_dir.join(format!("{stem}.wav"));
 
-    let status = Command::new(&config.tools.ffmpeg_path)
-        .arg("-i")
-        .arg(video_path)
-        .arg("-vn")
-        .arg("-acodec")
-        .arg("pcm_s16le")
-        .arg("-ar")
-        .arg("16000")
-        .arg("-ac")
-        .arg("1")
-        .arg("-y")
-        .arg(&output_path)
-        .status()
-        .with_context(|| format!("failed to run ffmpeg on: {}", video_path.display()))?;
+    let status = super::run_tool(
+        Command::new(&config.tools.ffmpeg_path)
+            .arg("-i")
+            .arg(video_path)
+            .arg("-vn")
+            .arg("-acodec")
+            .arg("pcm_s16le")
+            .arg("-ar")
+            .arg("16000")
+            .arg("-ac")
+            .arg("1")
+            .arg("-y")
+            .arg(&output_path),
+        "ffmpeg",
+    )?;
 
     if !status.success() {
         return Err(anyhow::anyhow!(
@@ -46,15 +47,16 @@ pub fn extract_audio(
 }
 
 pub fn transcribe_audio(audio_path: &Path, config: &Config) -> anyhow::Result<String> {
-    let output = Command::new(&config.tools.whisper_cpp_path)
-        .arg("-m")
-        .arg(&config.tools.whisper_model_path)
-        .arg("-f")
-        .arg(audio_path)
-        .arg("--output-txt")
-        .arg("--no-timestamps")
-        .output()
-        .with_context(|| format!("failed to run whisper-cpp on: {}", audio_path.display()))?;
+    let output = super::run_tool_output(
+        Command::new(&config.tools.whisper_cpp_path)
+            .arg("-m")
+            .arg(&config.tools.whisper_model_path)
+            .arg("-f")
+            .arg(audio_path)
+            .arg("--output-txt")
+            .arg("--no-timestamps"),
+        "whisper-cpp",
+    )?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

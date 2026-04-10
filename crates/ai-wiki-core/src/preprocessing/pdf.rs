@@ -120,15 +120,16 @@ pub fn split_pdf_chapters(
         };
 
         let output_path = output_dir.join(format!("{stem}_chapter_{:03}.pdf", i + 1));
-        let status = Command::new(&config.tools.qpdf_path)
-            .arg(path)
-            .arg("--pages")
-            .arg(".")
-            .arg(format!("{start}-{end}"))
-            .arg("--")
-            .arg(&output_path)
-            .status()
-            .with_context(|| format!("failed to run qpdf for chapter {}", i + 1))?;
+        let status = super::run_tool(
+            Command::new(&config.tools.qpdf_path)
+                .arg(path)
+                .arg("--pages")
+                .arg(".")
+                .arg(format!("{start}-{end}"))
+                .arg("--")
+                .arg(&output_path),
+            "qpdf",
+        )?;
 
         if !status.success() {
             return Err(anyhow::anyhow!(
@@ -153,10 +154,12 @@ pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> 
     }
 
     // Fallback to pdftotext (poppler) via Command
-    let pdftotext_result = Command::new(&config.tools.pdftotext_path)
-        .arg(path)
-        .arg("-") // output to stdout
-        .output();
+    let pdftotext_result = super::run_tool_output(
+        Command::new(&config.tools.pdftotext_path)
+            .arg(path)
+            .arg("-"),
+        "pdftotext",
+    );
 
     if let Ok(output) = pdftotext_result
         && output.status.success()
@@ -184,13 +187,12 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
     std::fs::create_dir_all(&temp_dir)?;
 
     // Render PDF pages to PPM images
-    let status = Command::new(&config.tools.pdftoppm_path)
-        .args([
-            path.to_str().unwrap_or_default(),
-            temp_dir.join("page").to_str().unwrap_or_default(),
-        ])
-        .status()
-        .map_err(|e| anyhow::anyhow!("failed to run pdftoppm: {}", e))?;
+    let status = super::run_tool(
+        Command::new(&config.tools.pdftoppm_path)
+            .arg(path.to_str().unwrap_or_default())
+            .arg(temp_dir.join("page").to_str().unwrap_or_default()),
+        "pdftoppm",
+    )?;
 
     if !status.success() {
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -218,14 +220,15 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
     };
 
     for page_img in &pages {
-        let output = match Command::new(&config.tools.tesseract_path)
-            .args([page_img.to_str().unwrap_or_default(), "stdout"])
-            .output()
-        {
+        let output = match super::run_tool_output(
+            Command::new(&config.tools.tesseract_path)
+                .args([page_img.to_str().unwrap_or_default(), "stdout"]),
+            "tesseract",
+        ) {
             Ok(o) => o,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&temp_dir);
-                return Err(anyhow::anyhow!("failed to run tesseract: {}", e));
+                return Err(e);
             }
         };
 
