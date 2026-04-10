@@ -48,7 +48,9 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "glob",
  "ratatui",
+ "tempfile",
 ]
 
 [[package]]

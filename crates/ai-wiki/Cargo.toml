@@ -8,4 +8,8 @@ ai-wiki-core = { path = "../ai-wiki-core" }
 anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true
+glob.workspace = true
 ratatui.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
