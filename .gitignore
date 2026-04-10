@@ -3,6 +3,5 @@ target/
 *.db-wal
 *.db-shm
 processed/
-raw/pdf_*/
-raw/zip_*/
-raw/audio_*/
+raw/
+wiki/
