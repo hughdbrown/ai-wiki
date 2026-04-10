@@ -58,6 +58,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "glob",
+ "indexmap",
  "lopdf 0.40.0",
  "pdf-extract",
  "rusqlite",
