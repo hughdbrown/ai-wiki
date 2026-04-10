@@ -47,14 +47,29 @@ impl Wiki {
         Ok(())
     }
 
+    /// Resolve a relative path safely within the wiki root.
+    /// Rejects paths containing `..` components to prevent path traversal.
+    fn safe_resolve(&self, relative_path: &str) -> anyhow::Result<PathBuf> {
+        let rel = Path::new(relative_path);
+        for component in rel.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                anyhow::bail!("path traversal rejected: {}", relative_path);
+            }
+            if matches!(component, std::path::Component::RootDir) {
+                anyhow::bail!("absolute path rejected: {}", relative_path);
+            }
+        }
+        Ok(self.root.join(relative_path))
+    }
+
     pub fn read_page(&self, relative_path: &str) -> anyhow::Result<String> {
-        let path = self.root.join(relative_path);
+        let path = self.safe_resolve(relative_path)?;
         fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))
     }
 
     pub fn write_page(&self, relative_path: &str, content: &str) -> anyhow::Result<()> {
-        let path = self.root.join(relative_path);
+        let path = self.safe_resolve(relative_path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
                 anyhow::anyhow!("Failed to create directory {}: {}", parent.display(), e)
@@ -66,7 +81,7 @@ impl Wiki {
 
     pub fn list_pages(&self, subdirectory: Option<&str>) -> anyhow::Result<Vec<String>> {
         let dir = match subdirectory {
-            Some(sub) => self.root.join(sub),
+            Some(sub) => self.safe_resolve(sub)?,
             None => self.root.clone(),
         };
 
@@ -330,6 +345,47 @@ mod tests {
                 && line.chars().nth(7).map_or(false, |c| c.is_ascii_digit())
         });
         assert!(re_check, "Log entry should have ## [YYYY-MM-DD] format");
+    }
+
+    #[test]
+    fn test_read_page_rejects_path_traversal() {
+        let dir = tempdir().unwrap();
+        let wiki = Wiki::new(dir.path().to_path_buf());
+        wiki.init().unwrap();
+
+        let result = wiki.read_page("../../etc/passwd");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("traversal"));
+    }
+
+    #[test]
+    fn test_write_page_rejects_path_traversal() {
+        let dir = tempdir().unwrap();
+        let wiki = Wiki::new(dir.path().to_path_buf());
+        wiki.init().unwrap();
+
+        let result = wiki.write_page("../escape.md", "malicious");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_list_pages_rejects_path_traversal() {
+        let dir = tempdir().unwrap();
+        let wiki = Wiki::new(dir.path().to_path_buf());
+        wiki.init().unwrap();
+
+        let result = wiki.list_pages(Some("../../"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_page_rejects_absolute_path() {
+        let dir = tempdir().unwrap();
+        let wiki = Wiki::new(dir.path().to_path_buf());
+        wiki.init().unwrap();
+
+        let result = wiki.read_page("/etc/passwd");
+        assert!(result.is_err());
     }
 
     #[test]
