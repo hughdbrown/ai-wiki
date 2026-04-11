@@ -147,6 +147,40 @@ fn run_app<B: Backend>(
                             }
                         }
                     }
+                    KeyCode::Char('g') => {
+                        if !items.is_empty() {
+                            table_state.select(Some(0));
+                        }
+                    }
+                    KeyCode::Char('G') => {
+                        if !items.is_empty() {
+                            table_state.select(Some(items.len() - 1));
+                        }
+                    }
+                    KeyCode::Char('n') => {
+                        // Jump to next top-level item (parent_id is None)
+                        if let Some(sel) = table_state.selected() {
+                            if let Some(pos) = items[sel + 1..]
+                                .iter()
+                                .position(|it| it.parent_id.is_none())
+                            {
+                                table_state.select(Some(sel + 1 + pos));
+                            }
+                        }
+                    }
+                    KeyCode::Char('N') => {
+                        // Jump to previous top-level item (parent_id is None)
+                        if let Some(sel) = table_state.selected()
+                            && sel > 0
+                        {
+                            if let Some(pos) = items[..sel]
+                                .iter()
+                                .rposition(|it| it.parent_id.is_none())
+                            {
+                                table_state.select(Some(pos));
+                            }
+                        }
+                    }
                     KeyCode::Char('R') => {
                         // Retry: requeue errored/rejected item from table view
                         if let Some(sel) = table_state.selected()
@@ -308,9 +342,10 @@ fn draw_table(
     f.render_stateful_widget(table, chunks[1], table_state);
 
     // Help line
-    let help =
-        Paragraph::new(" q: quit | ↑↓: scroll | Enter: details | r: refresh | R: retry errored")
-            .style(Style::default().fg(Color::Cyan));
+    let help = Paragraph::new(
+        " q: quit | ↑↓: scroll | n/N: next/prev book | g/G: top/bottom | Enter: details | r: refresh | R: retry",
+    )
+    .style(Style::default().fg(Color::Cyan));
     f.render_widget(help, chunks[2]);
 }
 
