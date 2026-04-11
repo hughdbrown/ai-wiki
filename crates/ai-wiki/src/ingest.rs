@@ -65,15 +65,17 @@ pub fn run(tools: &ToolsConfig, wiki: &WikiConfig, path_str: &str) -> anyhow::Re
         match process_file(file, tools, wiki, &queue, None, 0) {
             Ok(result) => {
                 let elapsed = item_start.elapsed();
-                let status = if result.rejected > 0 {
-                    "rejected"
+                let status = if result.queued > 0 && result.rejected > 0 {
+                    "queued (some chapters rejected)"
+                } else if result.queued > 0 {
+                    "queued"
                 } else if result.errors > 0 {
                     "error"
-                } else if result.queued == 0 {
+                } else if result.rejected > 0 {
+                    "rejected"
+                } else {
                     skipped += 1;
                     "skipped"
-                } else {
-                    "queued"
                 };
                 eprintln!("{status} ({:.1}s)", elapsed.as_secs_f64());
                 totals.merge(result);
@@ -184,15 +186,15 @@ fn process_file(
                                 if let Err(e) =
                                     extract_and_store_text(chapter_path, chapter_id, tools, wiki)
                                 {
-                                    eprintln!(
-                                        "Failed to extract text for chapter {}: {e:#}",
-                                        chapter_path.display()
-                                    );
+                                    // Front matter chapters (cover, copyright, TOC) often
+                                    // have no extractable text. Reject rather than error
+                                    // so the parent book doesn't appear broken.
+                                    let reason = format!("{e:#}");
                                     queue
-                                        .mark_error(chapter_id, &format!("{e:#}"))
-                                        .context("failed to mark chapter error")?;
+                                        .mark_rejected(chapter_id, &reason)
+                                        .context("failed to mark chapter rejected")?;
                                     result.queued = result.queued.saturating_sub(1);
-                                    result.errors += 1;
+                                    result.rejected += 1;
                                 }
                             }
                             if let Err(e) = fs::remove_dir_all(&chapter_dir) {
