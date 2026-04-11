@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use anyhow::Result;
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -11,14 +9,22 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use ai_wiki_core::config::{AppConfig, WikiConfig};
+use ai_wiki_core::config::AppConfig;
 use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 use ai_wiki_core::wiki::Wiki;
 
 // ─── Parameter Structs ───────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetNextItemRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CompleteItemRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(description = "The queue item ID to mark as complete")]
     id: i64,
     #[schemars(description = "The relative path to the generated wiki page")]
@@ -27,6 +33,8 @@ pub struct CompleteItemRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RejectItemRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(description = "The queue item ID to reject")]
     id: i64,
     #[schemars(description = "The reason for rejection")]
@@ -35,6 +43,8 @@ pub struct RejectItemRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ErrorItemRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(description = "The queue item ID to mark as error")]
     id: i64,
     #[schemars(description = "The error message")]
@@ -43,6 +53,8 @@ pub struct ErrorItemRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListItemsRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(
         description = "Optional status filter: queued, in_progress, complete, rejected, error"
     )]
@@ -51,18 +63,24 @@ pub struct ListItemsRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadSourceRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(description = "The queue item ID whose preprocessed text to read")]
     id: i64,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadPageRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(description = "Relative path to the wiki page (e.g. entities/rust.md)")]
     path: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WritePageRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(description = "Relative path to the wiki page (e.g. entities/rust.md)")]
     path: String,
     #[schemars(description = "The markdown content to write")]
@@ -71,18 +89,30 @@ pub struct WritePageRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListPagesRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(description = "Optional subdirectory to list (e.g. entities, concepts)")]
     directory: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReadIndexRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateIndexRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(description = "The index entry to append (e.g. '- [[entities/rust]]')")]
     entry: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AppendLogRequest {
+    #[schemars(description = "Name of the wiki to operate on")]
+    wiki: String,
     #[schemars(description = "The log entry text to append")]
     entry: String,
 }
@@ -91,9 +121,7 @@ pub struct AppendLogRequest {
 
 #[derive(Clone)]
 pub struct WikiServer {
-    queue: std::sync::Arc<Mutex<Queue>>,
-    wiki: std::sync::Arc<Wiki>,
-    wiki_config: std::sync::Arc<WikiConfig>,
+    app_config: std::sync::Arc<AppConfig>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -120,10 +148,18 @@ impl WikiServer {
     #[tool(
         description = "Get the next queued item and mark it as in_progress. Returns JSON with item details or null if queue is empty."
     )]
-    async fn get_next_item(&self) -> Result<String, String> {
-        let queue = self.queue.clone();
+    async fn get_next_item(
+        &self,
+        Parameters(req): Parameters<GetNextItemRequest>,
+    ) -> Result<String, String> {
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
-            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let queue = Queue::open(&wiki_config.database_path())
+                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
             let item = queue
                 .claim_next_queued()
                 .map_err(|e| format!("Queue error: {e}"))?;
@@ -145,9 +181,14 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<CompleteItemRequest>,
     ) -> Result<String, String> {
-        let queue = self.queue.clone();
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
-            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let queue = Queue::open(&wiki_config.database_path())
+                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
             queue
                 .mark_complete(req.id, &req.wiki_page_path)
                 .map_err(|e| format!("Failed to mark complete: {e}"))?;
@@ -183,9 +224,14 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<RejectItemRequest>,
     ) -> Result<String, String> {
-        let queue = self.queue.clone();
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
-            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let queue = Queue::open(&wiki_config.database_path())
+                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
             queue
                 .mark_rejected(req.id, &req.reason)
                 .map_err(|e| format!("Failed to mark rejected: {e}"))?;
@@ -205,9 +251,14 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ErrorItemRequest>,
     ) -> Result<String, String> {
-        let queue = self.queue.clone();
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
-            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let queue = Queue::open(&wiki_config.database_path())
+                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
             queue
                 .mark_error(req.id, &req.message)
                 .map_err(|e| format!("Failed to mark error: {e}"))?;
@@ -229,9 +280,14 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ListItemsRequest>,
     ) -> Result<String, String> {
-        let queue = self.queue.clone();
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
-            let queue = queue.lock().map_err(|e| format!("Lock error: {e}"))?;
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let queue = Queue::open(&wiki_config.database_path())
+                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
             let status_filter: Option<ItemStatus> = match &req.status {
                 Some(s) => {
                     let parsed =
@@ -260,16 +316,18 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ReadSourceRequest>,
     ) -> Result<String, String> {
-        let wiki_config = self.wiki_config.clone();
-        let queue = self.queue.clone();
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let queue = Queue::open(&wiki_config.database_path())
+                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
             // Verify item exists in queue before reading
-            {
-                let queue = queue.lock().map_err(|e| format!("lock error: {e}"))?;
-                queue
-                    .get_item(req.id)
-                    .map_err(|e| format!("item {}: {e}", req.id))?;
-            }
+            queue
+                .get_item(req.id)
+                .map_err(|e| format!("item {}: {e}", req.id))?;
             let path = wiki_config.processed_text_path(req.id);
             std::fs::read_to_string(&path).map_err(|_| {
                 format!(
@@ -290,10 +348,17 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ReadPageRequest>,
     ) -> Result<String, String> {
-        let wiki = self.wiki.clone();
-        tokio::task::spawn_blocking(move || wiki.read_page(&req.path).map_err(|e| format!("{e}")))
-            .await
-            .map_err(|e| format!("task join error: {e}"))?
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
+        tokio::task::spawn_blocking(move || {
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let wiki = Wiki::new(wiki_config.wiki_dir());
+            wiki.read_page(&req.path).map_err(|e| format!("{e}"))
+        })
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// Write content to a wiki page.
@@ -304,8 +369,13 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<WritePageRequest>,
     ) -> Result<String, String> {
-        let wiki = self.wiki.clone();
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let wiki = Wiki::new(wiki_config.wiki_dir());
             wiki.write_page(&req.path, &req.content)
                 .map_err(|e| format!("{e}"))?;
             Ok(format!("Wrote wiki page: {}", req.path))
@@ -322,8 +392,13 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ListPagesRequest>,
     ) -> Result<String, String> {
-        let wiki = self.wiki.clone();
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let wiki = Wiki::new(wiki_config.wiki_dir());
             let pages = wiki
                 .list_pages(req.directory.as_deref())
                 .map_err(|e| format!("{e}"))?;
@@ -335,11 +410,21 @@ impl WikiServer {
 
     /// Read the wiki index page.
     #[tool(description = "Read the wiki index.md file.")]
-    async fn read_index(&self) -> Result<String, String> {
-        let wiki = self.wiki.clone();
-        tokio::task::spawn_blocking(move || wiki.read_index().map_err(|e| format!("{e}")))
-            .await
-            .map_err(|e| format!("task join error: {e}"))?
+    async fn read_index(
+        &self,
+        Parameters(req): Parameters<ReadIndexRequest>,
+    ) -> Result<String, String> {
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
+        tokio::task::spawn_blocking(move || {
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let wiki = Wiki::new(wiki_config.wiki_dir());
+            wiki.read_index().map_err(|e| format!("{e}"))
+        })
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
     }
 
     /// Append an entry to the wiki index.
@@ -348,8 +433,13 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<UpdateIndexRequest>,
     ) -> Result<String, String> {
-        let wiki = self.wiki.clone();
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let wiki = Wiki::new(wiki_config.wiki_dir());
             wiki.update_index(&req.entry).map_err(|e| format!("{e}"))?;
             Ok(format!("Updated index with: {}", req.entry))
         })
@@ -363,8 +453,13 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<AppendLogRequest>,
     ) -> Result<String, String> {
-        let wiki = self.wiki.clone();
+        let app_config = self.app_config.clone();
+        let wiki_name = req.wiki;
         tokio::task::spawn_blocking(move || {
+            let wiki_config = app_config
+                .resolve_wiki(&wiki_name)
+                .map_err(|e| format!("{e}"))?;
+            let wiki = Wiki::new(wiki_config.wiki_dir());
             wiki.append_log(&req.entry).map_err(|e| format!("{e}"))?;
             Ok(format!("Logged: {}", req.entry))
         })
@@ -377,9 +472,9 @@ impl WikiServer {
 impl ServerHandler for WikiServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "AI Wiki MCP server. Use queue tools to get items, \
-                 source tools to read preprocessed text, and wiki tools \
-                 to read/write wiki pages.",
+            "AI Wiki MCP server supporting multiple wikis. Every tool call requires a 'wiki' parameter \
+             specifying which wiki to operate on. Use queue tools to get/complete items, source tools \
+             to read preprocessed text, and wiki tools to read/write wiki pages.",
         )
     }
 }
@@ -389,11 +484,11 @@ impl ServerHandler for WikiServer {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use tempfile::tempdir;
 
-    use ai_wiki_core::config::WikiConfig;
+    use ai_wiki_core::config::AppConfig;
     use ai_wiki_core::queue::{FileType, ItemStatus, Queue};
     use ai_wiki_core::wiki::Wiki;
 
@@ -401,57 +496,70 @@ mod tests {
 
     // ─── Helper ───────────────────────────────────────────────────────────────
 
-    fn make_server() -> (WikiServer, tempfile::TempDir, tempfile::TempDir) {
-        let wiki_dir = tempdir().unwrap();
-        let processed_dir = tempdir().unwrap();
+    fn make_server() -> (WikiServer, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
 
-        let wiki = Wiki::new(wiki_dir.path().to_path_buf());
+        let wiki = Wiki::new(dir.path().join("wiki"));
         wiki.init().unwrap();
 
-        let queue = Queue::open_in_memory().unwrap();
+        std::fs::create_dir_all(dir.path().join("processed")).unwrap();
 
-        let wiki_config = WikiConfig {
-            name: "test".to_string(),
-            root: wiki_dir.path().to_path_buf(),
-        };
-        // Override processed_dir to use a separate tempdir for tests.
-        // WikiConfig derives processed_dir from root, but for tests we want
-        // the processed_dir to be separate. We'll create the expected subdir.
-        std::fs::create_dir_all(wiki_config.processed_dir()).unwrap();
+        // Create the database so it exists for tool calls
+        let _queue = Queue::open(&dir.path().join("ai-wiki.db")).unwrap();
+
+        let mut app_config = AppConfig::default();
+        app_config.register_wiki("test".to_string(), dir.path().to_path_buf());
 
         let server = WikiServer {
-            queue: Arc::new(Mutex::new(queue)),
-            wiki: Arc::new(wiki),
-            wiki_config: Arc::new(wiki_config),
+            app_config: Arc::new(app_config),
             tool_router: WikiServer::tool_router(),
         };
 
-        (server, wiki_dir, processed_dir)
+        (server, dir)
+    }
+
+    /// Helper to open the queue for the test wiki (re-opens from disk each time, like the server does).
+    fn open_test_queue(dir: &tempfile::TempDir) -> Queue {
+        Queue::open(&dir.path().join("ai-wiki.db")).unwrap()
     }
 
     // ─── Queue Tool Tests ─────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_get_next_item_empty_queue() {
-        let (server, _wiki_dir, _processed_dir) = make_server();
-        let result = server.get_next_item().await;
+        use super::GetNextItemRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, _dir) = make_server();
+        let result = server
+            .get_next_item(Parameters(GetNextItemRequest {
+                wiki: "test".to_string(),
+            }))
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "null");
     }
 
     #[tokio::test]
     async fn test_get_next_item_returns_item_and_marks_in_progress() {
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        use super::GetNextItemRequest;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let (server, dir) = make_server();
 
         // Enqueue a file first
         {
-            let queue = server.queue.lock().unwrap();
+            let queue = open_test_queue(&dir);
             queue
                 .enqueue(Path::new("docs/readme.md"), FileType::Markdown, None)
                 .unwrap();
         }
 
-        let result = server.get_next_item().await;
+        let result = server
+            .get_next_item(Parameters(GetNextItemRequest {
+                wiki: "test".to_string(),
+            }))
+            .await;
         assert!(result.is_ok());
         let json_str = result.unwrap();
         assert_ne!(json_str, "null");
@@ -461,7 +569,7 @@ mod tests {
         assert_eq!(value["file_path"], "docs/readme.md");
 
         // Verify item is actually marked in_progress in the queue
-        let queue = server.queue.lock().unwrap();
+        let queue = open_test_queue(&dir);
         let item = queue.get_item(1).unwrap();
         assert_eq!(item.status, ItemStatus::InProgress);
         assert!(item.started_at.is_some());
@@ -472,11 +580,11 @@ mod tests {
         use super::CompleteItemRequest;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, dir) = make_server();
 
         // Enqueue and advance to in_progress
         let id = {
-            let queue = server.queue.lock().unwrap();
+            let queue = open_test_queue(&dir);
             let id = queue
                 .enqueue(Path::new("docs/test.md"), FileType::Markdown, None)
                 .unwrap();
@@ -486,6 +594,7 @@ mod tests {
 
         let result = server
             .complete_item(Parameters(CompleteItemRequest {
+                wiki: "test".to_string(),
                 id,
                 wiki_page_path: "entities/test.md".to_string(),
             }))
@@ -497,7 +606,7 @@ mod tests {
         assert_eq!(value["id"], id);
 
         // Verify in queue
-        let queue = server.queue.lock().unwrap();
+        let queue = open_test_queue(&dir);
         let item = queue.get_item(id).unwrap();
         assert_eq!(item.status, ItemStatus::Complete);
         assert_eq!(item.wiki_page_path.as_deref(), Some("entities/test.md"));
@@ -508,10 +617,10 @@ mod tests {
         use super::RejectItemRequest;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, dir) = make_server();
 
         let id = {
-            let queue = server.queue.lock().unwrap();
+            let queue = open_test_queue(&dir);
             queue
                 .enqueue(Path::new("sensitive.pdf"), FileType::Pdf, None)
                 .unwrap()
@@ -519,6 +628,7 @@ mod tests {
 
         let result = server
             .reject_item(Parameters(RejectItemRequest {
+                wiki: "test".to_string(),
                 id,
                 reason: "sensitive content".to_string(),
             }))
@@ -528,7 +638,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
         assert_eq!(value["status"], "rejected");
 
-        let queue = server.queue.lock().unwrap();
+        let queue = open_test_queue(&dir);
         let item = queue.get_item(id).unwrap();
         assert_eq!(item.status, ItemStatus::Rejected);
         assert_eq!(item.error_message.as_deref(), Some("sensitive content"));
@@ -539,10 +649,10 @@ mod tests {
         use super::ErrorItemRequest;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, dir) = make_server();
 
         let id = {
-            let queue = server.queue.lock().unwrap();
+            let queue = open_test_queue(&dir);
             queue
                 .enqueue(Path::new("corrupt.pdf"), FileType::Pdf, None)
                 .unwrap()
@@ -550,6 +660,7 @@ mod tests {
 
         let result = server
             .error_item(Parameters(ErrorItemRequest {
+                wiki: "test".to_string(),
                 id,
                 message: "parse failed".to_string(),
             }))
@@ -559,7 +670,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
         assert_eq!(value["status"], "error");
 
-        let queue = server.queue.lock().unwrap();
+        let queue = open_test_queue(&dir);
         let item = queue.get_item(id).unwrap();
         assert_eq!(item.status, ItemStatus::Error);
         assert_eq!(item.error_message.as_deref(), Some("parse failed"));
@@ -570,15 +681,15 @@ mod tests {
         use super::ListItemsRequest;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, dir) = make_server();
 
         // Enqueue three items; mark one in_progress and one rejected
-        let (id1, _id2, id3) = {
-            let queue = server.queue.lock().unwrap();
+        {
+            let queue = open_test_queue(&dir);
             let id1 = queue
                 .enqueue(Path::new("a.md"), FileType::Markdown, None)
                 .unwrap();
-            let id2 = queue
+            let _id2 = queue
                 .enqueue(Path::new("b.md"), FileType::Markdown, None)
                 .unwrap();
             let id3 = queue
@@ -586,13 +697,12 @@ mod tests {
                 .unwrap();
             queue.mark_in_progress(id1).unwrap();
             queue.mark_rejected(id3, "not needed").unwrap();
-            (id1, id2, id3)
         };
-        let _ = (id1, id3); // suppress unused warnings
 
-        // Filter by queued — should be 1
+        // Filter by queued -- should be 1
         let result = server
             .list_items(Parameters(ListItemsRequest {
+                wiki: "test".to_string(),
                 status: Some("queued".to_string()),
             }))
             .await;
@@ -601,9 +711,10 @@ mod tests {
         assert_eq!(items.as_array().unwrap().len(), 1);
         assert_eq!(items[0]["status"], "queued");
 
-        // Filter by rejected — should be 1
+        // Filter by rejected -- should be 1
         let result = server
             .list_items(Parameters(ListItemsRequest {
+                wiki: "test".to_string(),
                 status: Some("rejected".to_string()),
             }))
             .await;
@@ -612,9 +723,12 @@ mod tests {
         assert_eq!(items.as_array().unwrap().len(), 1);
         assert_eq!(items[0]["status"], "rejected");
 
-        // No filter — should be 3
+        // No filter -- should be 3
         let result = server
-            .list_items(Parameters(ListItemsRequest { status: None }))
+            .list_items(Parameters(ListItemsRequest {
+                wiki: "test".to_string(),
+                status: None,
+            }))
             .await;
         assert!(result.is_ok());
         let items: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
@@ -628,22 +742,26 @@ mod tests {
         use super::ReadSourceRequest;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, dir) = make_server();
 
         // Enqueue an item to get a valid ID
         let id = {
-            let queue = server.queue.lock().unwrap();
+            let queue = open_test_queue(&dir);
             queue
                 .enqueue(Path::new("docs/source.pdf"), FileType::Pdf, None)
                 .unwrap()
         };
 
-        // Create the processed text file in the wiki_config's processed_dir
-        let txt_path = server.wiki_config.processed_text_path(id);
+        // Create the processed text file
+        let wiki_config = server.app_config.resolve_wiki("test").unwrap();
+        let txt_path = wiki_config.processed_text_path(id);
         std::fs::write(&txt_path, "Preprocessed content for source.").unwrap();
 
         let result = server
-            .read_source(Parameters(ReadSourceRequest { id }))
+            .read_source(Parameters(ReadSourceRequest {
+                wiki: "test".to_string(),
+                id,
+            }))
             .await;
         assert!(result.is_ok(), "read_source failed: {:?}", result);
         assert_eq!(result.unwrap(), "Preprocessed content for source.");
@@ -654,18 +772,21 @@ mod tests {
         use super::ReadSourceRequest;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, dir) = make_server();
 
         // Enqueue item but do NOT create a processed file
         let id = {
-            let queue = server.queue.lock().unwrap();
+            let queue = open_test_queue(&dir);
             queue
                 .enqueue(Path::new("docs/orphan.pdf"), FileType::Pdf, None)
                 .unwrap()
         };
 
         let result = server
-            .read_source(Parameters(ReadSourceRequest { id }))
+            .read_source(Parameters(ReadSourceRequest {
+                wiki: "test".to_string(),
+                id,
+            }))
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err();
@@ -680,11 +801,14 @@ mod tests {
         use super::ReadSourceRequest;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, _dir) = make_server();
 
         // ID 999 was never enqueued
         let result = server
-            .read_source(Parameters(ReadSourceRequest { id: 999 }))
+            .read_source(Parameters(ReadSourceRequest {
+                wiki: "test".to_string(),
+                id: 999,
+            }))
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err();
@@ -698,11 +822,12 @@ mod tests {
         use super::{ReadPageRequest, WritePageRequest};
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, _dir) = make_server();
 
         let content = "# Rust\n\nA systems programming language.";
         let write_result = server
             .write_page(Parameters(WritePageRequest {
+                wiki: "test".to_string(),
                 path: "entities/rust.md".to_string(),
                 content: content.to_string(),
             }))
@@ -715,6 +840,7 @@ mod tests {
 
         let read_result = server
             .read_page(Parameters(ReadPageRequest {
+                wiki: "test".to_string(),
                 path: "entities/rust.md".to_string(),
             }))
             .await;
@@ -724,19 +850,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_index_and_read_index() {
-        use super::UpdateIndexRequest;
+        use super::{ReadIndexRequest, UpdateIndexRequest};
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, _dir) = make_server();
 
         let result = server
             .update_index(Parameters(UpdateIndexRequest {
+                wiki: "test".to_string(),
                 entry: "- [[entities/rust]]".to_string(),
             }))
             .await;
         assert!(result.is_ok(), "update_index failed: {:?}", result);
 
-        let index_result = server.read_index().await;
+        let index_result = server
+            .read_index(Parameters(ReadIndexRequest {
+                wiki: "test".to_string(),
+            }))
+            .await;
         assert!(
             index_result.is_ok(),
             "read_index failed: {:?}",
@@ -755,10 +886,11 @@ mod tests {
         use super::ReadPageRequest;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, _dir) = make_server();
 
         let result = server
             .append_log(Parameters(AppendLogRequest {
+                wiki: "test".to_string(),
                 entry: "ingest | Rust programming language".to_string(),
             }))
             .await;
@@ -766,6 +898,7 @@ mod tests {
 
         let log = server
             .read_page(Parameters(ReadPageRequest {
+                wiki: "test".to_string(),
                 path: "log.md".to_string(),
             }))
             .await;
@@ -787,7 +920,7 @@ mod tests {
         use super::{ListPagesRequest, WritePageRequest};
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, _processed_dir) = make_server();
+        let (server, _dir) = make_server();
 
         // Write several pages
         for (path, content) in &[
@@ -797,6 +930,7 @@ mod tests {
         ] {
             server
                 .write_page(Parameters(WritePageRequest {
+                    wiki: "test".to_string(),
                     path: path.to_string(),
                     content: content.to_string(),
                 }))
@@ -804,9 +938,12 @@ mod tests {
                 .unwrap();
         }
 
-        // List all pages — should include the 3 written + index.md + log.md + CLAUDE.md
+        // List all pages -- should include the 3 written + index.md + log.md + CLAUDE.md
         let result = server
-            .list_pages(Parameters(ListPagesRequest { directory: None }))
+            .list_pages(Parameters(ListPagesRequest {
+                wiki: "test".to_string(),
+                directory: None,
+            }))
             .await;
         assert!(result.is_ok(), "list_pages failed: {:?}", result);
         let pages: Vec<String> = serde_json::from_str(&result.unwrap()).unwrap();
@@ -816,9 +953,10 @@ mod tests {
             pages.len()
         );
 
-        // Filter by entities subdirectory — should have exactly 2
+        // Filter by entities subdirectory -- should have exactly 2
         let result = server
             .list_pages(Parameters(ListPagesRequest {
+                wiki: "test".to_string(),
                 directory: Some("entities".to_string()),
             }))
             .await;
@@ -832,29 +970,21 @@ mod tests {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let wiki_name = std::env::var("AI_WIKI_NAME").ok();
-
     let app_config = AppConfig::load()?;
     app_config.validate_tools()?;
 
-    let wiki_config = app_config.resolve_wiki_auto(wiki_name.as_deref())?;
-
-    let queue = Queue::open(&wiki_config.database_path())?;
-
-    let reset_count = queue
-        .reset_in_progress()
-        .map_err(|e| anyhow::anyhow!("failed to reset in-progress items: {e}"))?;
-    if reset_count > 0 {
-        eprintln!("Reset {reset_count} in-progress item(s) back to queued.");
+    // Log registered wikis
+    if app_config.wikis.is_empty() {
+        eprintln!("Warning: no wikis registered. Run 'ai-wiki init' first.");
+    } else {
+        eprintln!("Serving {} wiki(s):", app_config.wikis.len());
+        for name in app_config.wikis.keys() {
+            eprintln!("  - {name}");
+        }
     }
 
-    let wiki = Wiki::new(wiki_config.wiki_dir());
-    wiki.init()?;
-
     let server = WikiServer {
-        queue: std::sync::Arc::new(Mutex::new(queue)),
-        wiki: std::sync::Arc::new(wiki),
-        wiki_config: std::sync::Arc::new(wiki_config),
+        app_config: std::sync::Arc::new(app_config),
         tool_router: WikiServer::tool_router(),
     };
 
