@@ -17,6 +17,12 @@ pub enum PdfClassification {
 /// overflow the default 8 MB main thread stack.
 const PDF_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 
+/// Mutex to serialize access to the process-global panic hook.
+/// Without this, concurrent calls to `run_in_pdf_thread` can race on
+/// `take_hook`/`set_hook`, causing one thread to capture the other's
+/// noop hook and permanently silencing panic output.
+static HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Run a closure on a dedicated thread with a large stack, catching panics
 /// silently. This handles both:
 /// - panics from buggy pdf-extract/lopdf code (caught by catch_unwind)
@@ -26,6 +32,7 @@ where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
+    let _guard = HOOK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
 
@@ -38,6 +45,7 @@ where
     let result = handle.join().map_err(|_| ())?.map_err(|_| ());
 
     std::panic::set_hook(prev_hook);
+    drop(_guard);
     result
 }
 
@@ -152,10 +160,21 @@ pub fn split_pdf_chapters(
         )?;
 
         // qpdf exit codes: 0 = success, 3 = warnings (file still produced OK), 2 = errors
-        let exit_code = status.code().unwrap_or(1);
+        let exit_code = match status.code() {
+            Some(code) => code,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "qpdf was killed by signal for chapter {} (pages {}-{})",
+                    i + 1,
+                    start,
+                    end
+                ));
+            }
+        };
         if exit_code != 0 && exit_code != 3 {
             return Err(anyhow::anyhow!(
-                "qpdf failed for chapter {} (pages {}-{})",
+                "qpdf failed with exit code {} for chapter {} (pages {}-{})",
+                exit_code,
                 i + 1,
                 start,
                 end
