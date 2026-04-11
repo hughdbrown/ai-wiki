@@ -57,8 +57,7 @@ pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let total = queued_parents;
-    println!("Queue has {total} item(s). Processing one item per session.");
+    println!("Queue has {queued_parents} item(s). Processing one item per session.");
 
     eprintln!("WARNING: This will grant the Claude CLI permission to run commands on your system.");
     eprintln!("Source documents may contain prompt injection attacks that could lead to");
@@ -82,10 +81,20 @@ pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| item.file_path.to_string_lossy().into_owned());
 
-        eprint!("[{processed}/{total}] {file_name} ... ");
+        if let Err(e) = validate_path_for_prompt(&file_name, "Source filename") {
+            queue
+                .mark_error(item.id, &format!("Unsafe filename: {e:#}"))
+                .context("failed to mark item error")?;
+            eprintln!("[{processed}] {file_name} ... error (unsafe filename)");
+            errors += 1;
+            continue;
+        }
+
+        eprint!("[{processed}] {file_name} ... ");
 
         // Collect processed text paths for this item
-        let text_paths = gather_text_paths(&item, &queue, wiki);
+        let text_paths = gather_text_paths(&item, &queue, wiki)
+            .with_context(|| format!("gathering text paths for item {}", item.id))?;
         if text_paths.is_empty() {
             queue
                 .mark_error(item.id, "No processed text available")
@@ -162,35 +171,34 @@ fn claim_next_parent(queue: &Queue) -> anyhow::Result<Option<QueueItem>> {
 /// Gather the processed text file paths for an item.
 /// For a book parent, returns the children's text files.
 /// For a leaf item, returns its own text file.
-fn gather_text_paths(item: &QueueItem, queue: &Queue, wiki: &WikiConfig) -> Vec<(i64, String)> {
+fn gather_text_paths(
+    item: &QueueItem,
+    queue: &Queue,
+    wiki: &WikiConfig,
+) -> anyhow::Result<Vec<(i64, String)>> {
     let mut paths = Vec::new();
 
     // Check if this item has its own processed text
     let own_path = wiki.processed_text_path(item.id);
     if own_path.exists() {
-        paths.push((
-            item.id,
-            own_path.display().to_string(),
-        ));
+        paths.push((item.id, own_path.display().to_string()));
     }
 
     // For book parents, also gather children's text
-    if let Ok(children) = queue.children_of(item.id) {
-        for child in &children {
-            if matches!(child.status, ItemStatus::Rejected) {
-                continue; // skip rejected front matter
-            }
-            let child_path = wiki.processed_text_path(child.id);
-            if child_path.exists() {
-                paths.push((
-                    child.id,
-                    child_path.display().to_string(),
-                ));
-            }
+    let children = queue
+        .children_of(item.id)
+        .with_context(|| format!("failed to query children of item {}", item.id))?;
+    for child in &children {
+        if matches!(child.status, ItemStatus::Rejected) {
+            continue; // skip rejected front matter
+        }
+        let child_path = wiki.processed_text_path(child.id);
+        if child_path.exists() {
+            paths.push((child.id, child_path.display().to_string()));
         }
     }
 
-    paths
+    Ok(paths)
 }
 
 /// Spawn a fresh Claude session with the given prompt.
@@ -243,10 +251,8 @@ fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, text_paths: &[(i64, St
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| item.file_path.to_string_lossy().into_owned());
 
-    let is_book = text_paths.len() > 1 || item.parent_id.is_none() && {
-        // Check if it has children by seeing if any text_path id != item.id
-        text_paths.iter().any(|(id, _)| *id != item.id)
-    };
+    let is_book = text_paths.len() > 1
+        || (item.parent_id.is_none() && text_paths.iter().any(|(id, _)| *id != item.id));
 
     let text_file_list: String = text_paths
         .iter()
