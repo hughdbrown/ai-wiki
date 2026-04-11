@@ -1,13 +1,10 @@
 use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use anyhow::Context;
 
 use ai_wiki_core::config::WikiConfig;
-use ai_wiki_core::queue::Queue;
+use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 
 /// Validate that a path string contains only safe characters for prompt embedding.
 /// Permits alphanumerics, `.`, `_`, `/`, `-`, and space.
@@ -25,7 +22,6 @@ fn validate_path_for_prompt(path: &str, label: &str) -> anyhow::Result<()> {
 }
 
 pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
-    // Validate paths and wiki name before embedding them in the prompt
     let wiki_dir = wiki.wiki_dir().display().to_string();
     let processed_dir = wiki.processed_dir().display().to_string();
 
@@ -53,18 +49,129 @@ pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
     }
 
     let total = queued_count as usize;
-    println!("Queue has {total} item(s). Processing all.");
-
-    let prompt = build_prompt(wiki, total);
+    println!("Queue has {total} item(s). Processing one item per session.");
 
     eprintln!("WARNING: This will grant the Claude CLI permission to run commands on your system.");
     eprintln!("Source documents may contain prompt injection attacks that could lead to");
     eprintln!("arbitrary command execution. Only proceed if you trust all queued sources.");
     eprintln!();
 
-    println!("Launching Claude to process the queue...");
-    println!();
+    let mut processed = 0usize;
+    let mut errors = 0usize;
 
+    loop {
+        // Claim the next item from Rust, not from inside Claude
+        let item = match queue.claim_next_queued()? {
+            Some(item) => item,
+            None => break,
+        };
+
+        processed += 1;
+        let file_name = item
+            .file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| item.file_path.to_string_lossy().into_owned());
+
+        eprint!("[{processed}/{total}] {file_name} ... ");
+
+        // Collect processed text paths for this item
+        let text_paths = gather_text_paths(&item, &queue, wiki);
+        if text_paths.is_empty() {
+            queue
+                .mark_error(item.id, "No processed text available")
+                .context("failed to mark item error")?;
+            eprintln!("error (no text)");
+            errors += 1;
+            continue;
+        }
+
+        let prompt = build_item_prompt(wiki, &item, &text_paths);
+
+        let item_start = std::time::Instant::now();
+        match run_claude_session(&prompt) {
+            Ok(()) => {
+                let elapsed = item_start.elapsed();
+                // Verify Claude marked it complete; if not, mark error
+                let updated = queue.get_item(item.id)?;
+                if updated.status == ItemStatus::InProgress {
+                    queue
+                        .mark_error(item.id, "Claude session ended without marking item complete")
+                        .context("failed to mark incomplete item")?;
+                    eprintln!("error (not marked complete) ({:.1}s)", elapsed.as_secs_f64());
+                    errors += 1;
+                } else {
+                    eprintln!("done ({:.1}s)", elapsed.as_secs_f64());
+                }
+            }
+            Err(e) => {
+                let elapsed = item_start.elapsed();
+                queue
+                    .mark_error(item.id, &format!("Claude session failed: {e:#}"))
+                    .context("failed to mark session-error item")?;
+                eprintln!("error ({:.1}s): {e:#}", elapsed.as_secs_f64());
+                errors += 1;
+            }
+        }
+    }
+
+    println!();
+    let counts = queue.count_by_status()?;
+    let get = |s: &str| -> u64 {
+        counts
+            .iter()
+            .find(|(name, _)| name == s)
+            .map(|(_, n)| *n)
+            .unwrap_or(0)
+    };
+    println!(
+        "Done. Processed {processed} item(s), {errors} error(s).\n\
+         Queue status: {} complete, {} queued, {} error, {} rejected",
+        get("complete"),
+        get("queued"),
+        get("error"),
+        get("rejected"),
+    );
+
+    Ok(())
+}
+
+/// Gather the processed text file paths for an item.
+/// For a book parent, returns the children's text files.
+/// For a leaf item, returns its own text file.
+fn gather_text_paths(item: &QueueItem, queue: &Queue, wiki: &WikiConfig) -> Vec<(i64, String)> {
+    let mut paths = Vec::new();
+
+    // Check if this item has its own processed text
+    let own_path = wiki.processed_text_path(item.id);
+    if own_path.exists() {
+        paths.push((
+            item.id,
+            own_path.display().to_string(),
+        ));
+    }
+
+    // For book parents, also gather children's text
+    if let Ok(children) = queue.children_of(item.id) {
+        for child in &children {
+            if matches!(child.status, ItemStatus::Rejected) {
+                continue; // skip rejected front matter
+            }
+            let child_path = wiki.processed_text_path(child.id);
+            if child_path.exists() {
+                paths.push((
+                    child.id,
+                    child_path.display().to_string(),
+                ));
+            }
+        }
+    }
+
+    paths
+}
+
+/// Spawn a fresh Claude session with the given prompt.
+fn run_claude_session(prompt: &str) -> anyhow::Result<()> {
     let mut child = Command::new("claude")
         .arg("--print")
         .arg("--dangerously-skip-permissions")
@@ -80,173 +187,162 @@ pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
             .context("failed to write prompt to claude stdin")?;
     }
 
-    // Spawn a background thread to poll the queue and print progress
-    let stop = Arc::new(AtomicBool::new(false));
-    let progress_handle = {
-        let stop = Arc::clone(&stop);
-        let db_path: PathBuf = wiki.database_path();
-        std::thread::spawn(move || print_progress_loop(&db_path, total, &stop))
-    };
-
     let status = child.wait().context("failed to wait for claude process")?;
-
-    stop.store(true, Ordering::Relaxed);
-    let _ = progress_handle.join();
-
     if !status.success() {
         anyhow::bail!("claude exited with status: {status}");
     }
 
-    // Show summary after Claude finishes
-    println!();
-    let counts = queue.count_by_status()?;
-    let get = |s: &str| -> u64 {
-        counts
-            .iter()
-            .find(|(name, _)| name == s)
-            .map(|(_, n)| *n)
-            .unwrap_or(0)
-    };
-    println!(
-        "Queue status: {} complete, {} queued, {} error, {} rejected",
-        get("complete"),
-        get("queued"),
-        get("error"),
-        get("rejected"),
-    );
-
     Ok(())
 }
 
-fn print_progress_loop(db_path: &Path, initial_queued: usize, stop: &AtomicBool) {
-    let mut last_complete: u64 = 0;
-    let mut last_error: u64 = 0;
-
-    while !stop.load(Ordering::Relaxed) {
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let Ok(queue) = Queue::open(db_path) else {
-            continue;
-        };
-        let Ok(counts) = queue.count_by_status() else {
-            continue;
-        };
-
-        let get = |s: &str| -> u64 {
-            counts
-                .iter()
-                .find(|(name, _)| name == s)
-                .map(|(_, n)| *n)
-                .unwrap_or(0)
-        };
-
-        let complete = get("complete");
-        let error = get("error");
-        let in_progress = get("in_progress");
-
-        if complete != last_complete || error != last_error {
-            let done = complete + error;
-            eprintln!(
-                "  Progress: {done}/{initial_queued} ({complete} complete, {error} errors, {in_progress} in progress)"
-            );
-            last_complete = complete;
-            last_error = error;
-        }
-    }
-}
-
-fn build_prompt(wiki: &WikiConfig, total: usize) -> String {
+fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, text_paths: &[(i64, String)]) -> String {
     let wiki_dir = wiki.wiki_dir().display().to_string();
-    let processed_dir = wiki.processed_dir().display().to_string();
     let wiki_name = &wiki.name;
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+    let item_id = item.id;
+
+    let file_name = item
+        .file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| item.file_path.to_string_lossy().into_owned());
+
+    let is_book = text_paths.len() > 1 || item.parent_id.is_none() && {
+        // Check if it has children by seeing if any text_path id != item.id
+        text_paths.iter().any(|(id, _)| *id != item.id)
+    };
+
+    let text_file_list: String = text_paths
+        .iter()
+        .map(|(id, path)| format!("  - ID {id}: `{path}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Build list of children IDs for the mark-complete step
+    let child_ids: Vec<i64> = text_paths
+        .iter()
+        .filter(|(id, _)| *id != item.id)
+        .map(|(id, _)| *id)
+        .collect();
+
+    let mark_children_complete = if child_ids.is_empty() {
+        String::new()
+    } else {
+        let cmds: Vec<String> = child_ids
+            .iter()
+            .map(|id| {
+                format!(
+                    "ai-wiki --wiki '{wiki_name}' queue complete {id} \"sources/<slug>.md\""
+                )
+            })
+            .collect();
+        format!(
+            "\n   Also mark all children complete:\n   ```bash\n   {}\n   ```",
+            cmds.join("\n   ")
+        )
+    };
+
+    let book_hint = if is_book {
+        "This is a **book with multiple chapters**. Read ALL chapter files to build a comprehensive summary."
+    } else {
+        "This is a single document."
+    };
 
     format!(
-        r#"You are processing source documents from an ai-wiki queue into an Obsidian wiki.
+        r#"You are building an Obsidian wiki from a source document. This is a two-pass process.
 
-## Setup
+## Context
 
 - **Wiki:** {wiki_name}
 - **Wiki directory:** {wiki_dir}
-- **Processed text directory:** {processed_dir}
-- **Total items:** {total}
-- **CLI binary:** `ai-wiki --wiki '{wiki_name}'`
+- **Source file:** {file_name}
+- **Item ID:** {item_id}
+- {book_hint}
 
-## Instructions
+### Processed text files to read:
+{text_file_list}
 
-Process queued items one at a time using the `ai-wiki queue` subcommands. For each item:
+## Pass 1: Source Summary
 
-1. **Claim the next item:**
-   ```bash
-   ai-wiki --wiki '{wiki_name}' queue claim
-   ```
-   This atomically claims the oldest queued item and prints its details as tab-separated fields:
-   `<ID>\t<file_path>\t<file_type>\t<parent_id_or_none>`
-   If the output is `EMPTY`, the queue is exhausted — stop processing.
+Read all the processed text files listed above, then create a source summary page.
 
-2. **Read the processed text** from `{processed_dir}/<ID>.txt`. If the file doesn't exist:
-   - If the item has children (it's a book parent), read the children's processed text instead.
-   - If no text is available, mark as error and move to the next item:
-     ```bash
-     ai-wiki --wiki '{wiki_name}' queue error <ID> "No processed text available"
-     ```
+1. **Create `{wiki_dir}/sources/<slug>.md`** with:
+   - YAML frontmatter: type, tags, sources, created, updated
+   - Title, author, publisher info
+   - Chapter-by-chapter summary with key topics
+   - Use `[[wikilinks]]` for cross-references to concepts and entities
 
-3. **Extract knowledge** from the text:
-   - Key entities (people, organizations, tools)
-   - Important concepts
-   - Specific claims or data points
-
-4. **Create wiki pages** in `{wiki_dir}/`:
-   - `sources/<slug>.md` — source summary with YAML frontmatter and [[wikilinks]]
-   - `entities/<slug>.md` — for people/organizations (check existing files first!)
-   - `concepts/<slug>.md` — for important concepts (check existing files first!)
-   - `claims/<slug>.md` — for specific data points (add `data-point: true` to frontmatter)
-
-   Every page must have YAML frontmatter:
    ```yaml
    ---
-   type: source | entity | concept | claim
+   type: source
    tags: [relevant, tags]
-   sources: [original-filename.pdf]
+   sources: [{file_name}]
    created: {today}
    updated: {today}
    ---
    ```
 
-5. **Update the index** — append new entries to `{wiki_dir}/index.md` under the correct ## heading.
+2. **Create or update entity pages** in `{wiki_dir}/entities/`:
+   - One page per author, publisher, or organization mentioned
+   - Check existing files first: `ls {wiki_dir}/entities/`
+   - If the entity page exists, append to it rather than overwriting
 
-6. **Update the log** — append `## [{today}] ingest | Title` to `{wiki_dir}/log.md`.
+## Pass 2: Concept and Claim Extraction
+
+Now re-read the source text and extract knowledge into dedicated pages.
+
+3. **Create concept pages** in `{wiki_dir}/concepts/`:
+   - Extract **at least 5 key concepts** from the source material
+   - Each concept gets its own page: `{wiki_dir}/concepts/<concept-slug>.md`
+   - Check existing files first: `ls {wiki_dir}/concepts/`
+   - If a concept page already exists, **update it** by appending the new source's perspective
+   - Each concept page must have:
+     - YAML frontmatter with `type: concept`
+     - A clear definition/explanation
+     - `[[wikilinks]]` back to the source and to related concepts
+     - A `## Sources` section listing which sources discuss this concept
+
+   ```yaml
+   ---
+   type: concept
+   tags: [relevant, tags]
+   sources: [{file_name}]
+   created: {today}
+   updated: {today}
+   ---
+   ```
+
+4. **Create claim pages** in `{wiki_dir}/claims/`:
+   - Extract specific factual claims, theorems, formulas, or data points
+   - Each claim gets its own page: `{wiki_dir}/claims/<claim-slug>.md`
+   - Include `data-point: true` in frontmatter for quantitative claims
+   - Link back to the source
+
+5. **Update the index** — append new entries to `{wiki_dir}/index.md` under the correct `##` heading (Sources, Concepts, Entities, Claims).
+
+6. **Update the log** — append `## [{today}] ingest | <title>` to `{wiki_dir}/log.md`.
 
 7. **Mark complete:**
    ```bash
-   ai-wiki --wiki '{wiki_name}' queue complete <ID> "sources/<slug>.md"
-   ```
-   For book parents, also mark all children complete with the same wiki_page_path.
+   ai-wiki --wiki '{wiki_name}' queue complete {item_id} "sources/<slug>.md"
+   ```{mark_children_complete}
 
-8. **Print progress** for each item:
-   ```
-   [N/{total}] <filename> ... done (created X pages)
-   ```
+## Requirements
 
-9. **Repeat** until the queue is empty.
-
-## Important Rules
-
-- Check `{wiki_dir}/concepts/` and `{wiki_dir}/entities/` before creating pages to avoid duplicates.
-- Book parents (items with children) should be summarized from their children's text.
-- Use [[wikilinks]] for all cross-references between pages.
-- Keep pages concise but informative.
-- If an item has no processable text, mark it as error with a descriptive message.
-
-Begin processing now.
+- You MUST create concept pages. Do not skip this step. Source summaries alone are not sufficient.
+- Each concept page must be a standalone page in `{wiki_dir}/concepts/`, not just a wikilink in the source page.
+- For math/science texts, concepts include: theorems, definitions, techniques, mathematical objects.
+- For technical texts, concepts include: patterns, protocols, algorithms, architectures.
+- Verify your work: after creating pages, run `ls {wiki_dir}/concepts/` to confirm they exist.
 "#,
         wiki_name = wiki_name,
         wiki_dir = wiki_dir,
-        processed_dir = processed_dir,
-        total = total,
-        today = chrono::Utc::now().format("%Y-%m-%d"),
+        file_name = file_name,
+        item_id = item_id,
+        text_file_list = text_file_list,
+        book_hint = book_hint,
+        today = today,
+        mark_children_complete = mark_children_complete,
     )
 }
 
@@ -256,29 +352,70 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn test_build_prompt_contains_expected_values() {
+    fn test_build_item_prompt_contains_expected_values() {
         let wiki = WikiConfig {
             name: "test-wiki".to_string(),
             root: PathBuf::from("/tmp/test-wiki"),
         };
-        let prompt = build_prompt(&wiki, 5);
+        let item = QueueItem {
+            id: 42,
+            file_path: PathBuf::from("/tmp/source.pdf"),
+            file_type: ai_wiki_core::queue::FileType::Pdf,
+            status: ItemStatus::InProgress,
+            parent_id: None,
+            wiki_page_path: None,
+            error_message: None,
+            created_at: chrono::Utc::now(),
+            started_at: Some(chrono::Utc::now()),
+            completed_at: None,
+        };
+        let text_paths = vec![(42, "/tmp/test-wiki/processed/42.txt".to_string())];
+        let prompt = build_item_prompt(&wiki, &item, &text_paths);
 
-        assert!(prompt.contains("ai-wiki --wiki 'test-wiki' queue claim"));
-        assert!(prompt.contains("ai-wiki --wiki 'test-wiki' queue complete"));
-        assert!(prompt.contains("ai-wiki --wiki 'test-wiki' queue error"));
-        assert!(prompt.contains("**Total items:** 5"));
+        assert!(prompt.contains("Item ID:** 42"));
+        assert!(prompt.contains("source.pdf"));
+        assert!(prompt.contains("Pass 1: Source Summary"));
+        assert!(prompt.contains("Pass 2: Concept and Claim Extraction"));
+        assert!(prompt.contains("at least 5 key concepts"));
+        assert!(prompt.contains("queue complete 42"));
         assert!(prompt.contains(&wiki.wiki_dir().display().to_string()));
-        assert!(prompt.contains(&wiki.processed_dir().display().to_string()));
-        // Verify date format YYYY-MM-DD appears
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         assert!(prompt.contains(&today));
-        // Verify no raw sqlite3 commands
         assert!(!prompt.contains("sqlite3"));
     }
 
     #[test]
+    fn test_build_item_prompt_includes_child_complete_commands() {
+        let wiki = WikiConfig {
+            name: "test-wiki".to_string(),
+            root: PathBuf::from("/tmp/test-wiki"),
+        };
+        let item = QueueItem {
+            id: 10,
+            file_path: PathBuf::from("/tmp/book.pdf"),
+            file_type: ai_wiki_core::queue::FileType::Pdf,
+            status: ItemStatus::InProgress,
+            parent_id: None,
+            wiki_page_path: None,
+            error_message: None,
+            created_at: chrono::Utc::now(),
+            started_at: Some(chrono::Utc::now()),
+            completed_at: None,
+        };
+        let text_paths = vec![
+            (11, "/tmp/test-wiki/processed/11.txt".to_string()),
+            (12, "/tmp/test-wiki/processed/12.txt".to_string()),
+        ];
+        let prompt = build_item_prompt(&wiki, &item, &text_paths);
+
+        assert!(prompt.contains("queue complete 10"));
+        assert!(prompt.contains("queue complete 11"));
+        assert!(prompt.contains("queue complete 12"));
+        assert!(prompt.contains("book with multiple chapters"));
+    }
+
+    #[test]
     fn test_validate_path_rejects_single_quote_in_wiki_name() {
-        // A wiki name with a single quote would break shell syntax in the prompt
         assert!(validate_path_for_prompt("my'wiki", "Wiki name").is_err());
         assert!(validate_path_for_prompt("my-wiki", "Wiki name").is_ok());
         assert!(validate_path_for_prompt("my_wiki", "Wiki name").is_ok());
