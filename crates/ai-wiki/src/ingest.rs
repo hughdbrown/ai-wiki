@@ -92,11 +92,7 @@ pub fn run(tools: &ToolsConfig, wiki: &WikiConfig, path_str: &str) -> anyhow::Re
 
     println!(
         "Ingest complete — queued: {}, rejected: {}, errors: {}, skipped: {}, failed: {} ({mins}m {secs}s)",
-        totals.queued,
-        totals.rejected,
-        totals.errors,
-        skipped,
-        top_level_errors
+        totals.queued, totals.rejected, totals.errors, skipped, top_level_errors
     );
 
     Ok(())

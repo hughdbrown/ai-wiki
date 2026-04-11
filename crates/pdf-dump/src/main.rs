@@ -16,8 +16,8 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("file not found: {}", path.display());
     }
 
-    let doc = Document::load(path)
-        .with_context(|| format!("failed to load PDF: {}", path.display()))?;
+    let doc =
+        Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
 
     let page_count = doc.get_pages().len();
     println!("File: {}", path.display());

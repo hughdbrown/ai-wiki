@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Global application config, read from ~/.ai-wiki/config.toml
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub tools: ToolsConfig,
     pub wikis: HashMap<String, WikiEntry>,
@@ -70,15 +70,6 @@ impl Default for ToolsConfig {
     }
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            tools: ToolsConfig::default(),
-            wikis: HashMap::new(),
-        }
-    }
-}
-
 impl AppConfig {
     /// Returns the path to the global config file: ~/.ai-wiki/config.toml
     /// Can be overridden with the `AI_WIKI_CONFIG` environment variable (useful for tests).
@@ -101,9 +92,8 @@ impl AppConfig {
             config.save()?;
             return Ok(config);
         }
-        let content = std::fs::read_to_string(&path).map_err(|e| {
-            anyhow::anyhow!("failed to read config file {}: {}", path.display(), e)
-        })?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("failed to read config file {}: {}", path.display(), e))?;
         let config: AppConfig = toml::from_str(&content).map_err(|e| {
             anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e)
         })?;
@@ -113,9 +103,8 @@ impl AppConfig {
 
     /// Load from a specific path (useful for tests).
     pub fn load_from(path: &Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path).map_err(|e| {
-            anyhow::anyhow!("failed to read config file {}: {}", path.display(), e)
-        })?;
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read config file {}: {}", path.display(), e))?;
         let config: AppConfig = toml::from_str(&content).map_err(|e| {
             anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e)
         })?;

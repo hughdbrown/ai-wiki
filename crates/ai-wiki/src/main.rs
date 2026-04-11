@@ -201,7 +201,9 @@ fn retry(app_config: &AppConfig, wiki: &WikiConfig) -> anyhow::Result<()> {
     let retried = queue.requeue_items(&retryable_ids)?;
     let skipped = error_items.len().saturating_sub(retried);
 
-    println!("Retry: {retried} item(s) requeued, {skipped} skipped (no processed text or already changed).");
+    println!(
+        "Retry: {retried} item(s) requeued, {skipped} skipped (no processed text or already changed)."
+    );
 
     if retried > 0 {
         println!("Running process to build wiki pages...");
@@ -225,7 +227,9 @@ fn clear(wiki: &WikiConfig) -> anyhow::Result<()> {
 
     let total = errors + children;
     if children > 0 {
-        println!("Cleared {total} item(s) from the queue ({errors} errored + {children} errored children).");
+        println!(
+            "Cleared {total} item(s) from the queue ({errors} errored + {children} errored children)."
+        );
     } else {
         println!("Cleared {errors} errored item(s) from the queue.");
     }
@@ -320,29 +324,28 @@ fn queue_cmd(wiki: &WikiConfig, cmd: QueueCommands) -> anyhow::Result<()> {
     let queue = ai_wiki_core::queue::Queue::open(&wiki.database_path())?;
 
     match cmd {
-        QueueCommands::Claim => {
-            match queue.claim_next_queued()? {
-                Some(item) => {
-                    let file_path_str = item.file_path.display().to_string();
-                    if file_path_str.contains('\t') {
-                        anyhow::bail!(
-                            "Claimed file path contains a tab character, which would break \
+        QueueCommands::Claim => match queue.claim_next_queued()? {
+            Some(item) => {
+                let file_path_str = item.file_path.display().to_string();
+                if file_path_str.contains('\t') {
+                    anyhow::bail!(
+                        "Claimed file path contains a tab character, which would break \
                              the tab-delimited output format: {file_path_str:?}"
-                        );
-                    }
-                    println!(
-                        "{}\t{}\t{}\t{}",
-                        item.id,
-                        file_path_str,
-                        item.file_type.as_str(),
-                        item.parent_id.map_or("none".to_owned(), |pid| pid.to_string()),
                     );
                 }
-                None => {
-                    println!("EMPTY");
-                }
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    item.id,
+                    file_path_str,
+                    item.file_type.as_str(),
+                    item.parent_id
+                        .map_or("none".to_owned(), |pid| pid.to_string()),
+                );
             }
-        }
+            None => {
+                println!("EMPTY");
+            }
+        },
         QueueCommands::Complete { id, wiki_page_path } => {
             queue.mark_complete(id, &wiki_page_path)?;
             println!("Marked item {id} as complete.");

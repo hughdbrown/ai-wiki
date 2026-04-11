@@ -1,6 +1,6 @@
 # ai-wiki
 
-A Rust application that builds and maintains a personal knowledge base by having an LLM incrementally process your documents into an interlinked Obsidian wiki.
+A Rust application that builds and maintains personal knowledge bases by having an LLM incrementally process your documents into interlinked Obsidian wikis.
 
 ## What is this?
 
@@ -31,11 +31,7 @@ Sources (PDFs, text, markdown)
     Processed Text      Index & Log
 ```
 
-Three layers:
-
-- **Raw sources** -- your PDFs, articles, text files. Immutable. The app reads but never modifies them.
-- **The wiki** -- LLM-generated Obsidian vault. Summaries, entity pages, concept pages, claims, an index, a log. The LLM owns this layer.
-- **The application** -- Rust CLI that preprocesses sources and manages the queue. Claude does the knowledge work.
+**Multi-wiki:** ai-wiki supports multiple independent wikis from a single installation. Each wiki has its own database, processed text, and Obsidian vault. A central config at `~/.ai-wiki/config.toml` registers all wikis.
 
 ## Setup
 
@@ -43,11 +39,7 @@ Three layers:
 
 **Rust toolchain:**
 ```bash
-# Option 1: Official rustup installer
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Option 2: Install via Homebrew (macOS)
-brew install rustup
 ```
 
 **External tools** (for PDF processing):
@@ -60,129 +52,115 @@ Optional (for audio/video transcription):
 brew install ffmpeg whisper-cpp
 ```
 
-**Claude Code** (for the `process` command):
+**Claude Code** (for the `process` command and querying):
 ```bash
 npm install -g @anthropic-ai/claude-code
 ```
 
-**Fast linker** (recommended, speeds up Rust builds):
-```bash
-brew install lld
-```
-
-### Build
+### Install
 
 ```bash
 git clone <this-repo>
 cd ai-wiki
-cargo build --release
+just deploy    # installs ai-wiki and ai-wiki-mcp to ~/.cargo/bin
 ```
 
-The release build produces three binaries:
-- `target/release/ai-wiki` -- the CLI (ingest, tui, process, retry, clear, queue)
-- `target/release/ai-wiki-mcp` -- the MCP server (for direct Claude Code integration)
-- `target/release/pdf-dump` -- diagnostic utility for inspecting PDF chapter splitting
+Or build manually:
+```bash
+cargo build --release
+# Binaries at target/release/ai-wiki, target/release/ai-wiki-mcp
+```
 
-### Configure
+### Create a Wiki
 
-On first run, `ai-wiki` creates a default `ai-wiki.toml`. Edit it to set absolute paths:
+```bash
+mkdir ~/wikis/rust && cd ~/wikis/rust
+ai-wiki init
+```
+
+This creates the directory structure and registers the wiki (named `rust`, from the directory name) in `~/.ai-wiki/config.toml`:
 
 ```toml
-[paths]
-raw_dir = "/path/to/your/raw/sources"
-wiki_dir = "/path/to/your/obsidian/vault"
-database_path = "/path/to/ai-wiki.db"
-processed_dir = "/path/to/processed/text"
-
-[pdf]
-book_min_pages = 50    # PDFs with outlines + this many pages are split into chapters
-
-[rejection]
-non_operative_extensions = [".dmg"]
-sensitive_filename_patterns = ["divorce", "court", "financial", "tax.return"]
-
 [tools]
 qpdf_path = "qpdf"
 pdftotext_path = "pdftotext"
-pdftoppm_path = "pdftoppm"
-tesseract_path = "tesseract"
-ffmpeg_path = "ffmpeg"
-whisper_cpp_path = "whisper-cpp"
-whisper_model_path = "models/ggml-large-v3.bin"
+# ...
+
+[wikis.rust]
+root = "/Users/you/wikis/rust"
+```
+
+You can create multiple wikis:
+```bash
+mkdir ~/wikis/python && cd ~/wikis/python
+ai-wiki init
+
+mkdir ~/wikis/ml && cd ~/wikis/ml
+ai-wiki init --name machine-learning
+```
+
+List all registered wikis:
+```bash
+ai-wiki list
 ```
 
 ### Open in Obsidian
 
-Point Obsidian at your `wiki_dir`. You'll see the wiki grow as items are processed.
+Point Obsidian at the `wiki/` subdirectory inside any wiki root (e.g., `~/wikis/rust/wiki/`). You'll see the wiki grow as items are processed.
 
 ## Usage
 
-ai-wiki operates in two phases: **load** and **process**.
+### Wiki Selection
+
+When you're inside a wiki's directory, commands auto-detect which wiki to use:
+```bash
+cd ~/wikis/rust
+ai-wiki ingest ~/Downloads/rust-book.pdf    # uses the "rust" wiki
+```
+
+From anywhere else, specify the wiki by name:
+```bash
+ai-wiki --wiki rust ingest ~/Downloads/rust-book.pdf
+```
+
+The `--wiki` flag always takes priority over directory detection.
 
 ### Phase 1: Load (Ingest)
 
-Ingest reads your source files, classifies them, extracts text, and queues them for LLM processing. No LLM is involved in this phase -- it's pure Rust.
+Ingest reads source files, classifies them, extracts text, and queues them for LLM processing. No LLM is involved -- pure Rust preprocessing.
 
 ```bash
-# Ingest a single file
 ai-wiki ingest ~/Downloads/paper.pdf
-
-# Ingest a directory
 ai-wiki ingest ~/Downloads/rust-books/
-
-# Ingest with a glob pattern (quotes prevent shell expansion; ai-wiki expands globs internally)
 ai-wiki ingest "~/Downloads/*.pdf"
-
-# Ingest from a file list (one path per line, # comments allowed)
 ai-wiki ingest @my-reading-list.txt
 ```
 
 What happens during ingest:
 
-- **Markdown/text files** are copied to the processed directory as-is.
-- **PDFs** are classified:
-  - Simple PDFs: text is extracted (pdf-extract, pdftotext, or OCR as fallback).
-  - Books (outlines + 50+ pages): split into chapters via `qpdf`, each chapter extracted separately.
-  - Sensitive files (matching rejection patterns): rejected and logged.
-- **ZIP files** are extracted and each contained file is processed recursively.
-- **Audio/video** (MP4, MKV, etc.): audio extracted with ffmpeg, transcribed with whisper-cpp.
-- **Non-operative files** (.dmg, etc.): rejected immediately.
+- **PDFs** with a table of contents are split into chapters via `qpdf`. Text extracted via pdf-extract, pdftotext, or OCR (pdftoppm + tesseract).
+- **Markdown/text** files are copied directly.
+- **ZIP** archives are extracted and each file processed recursively.
+- **Audio/video** (MP4, MKV, etc.) are transcribed via ffmpeg + whisper-cpp.
+- **Unknown file types** are rejected.
 
-Each file gets a queue entry in SQLite. Duplicate files are detected and skipped automatically.
-
-Progress is shown for each file:
+Duplicate files are detected and skipped automatically. Progress is shown per file:
 ```
 [1/794] document.pdf ... queued (0.3s)
 [2/794] installer.dmg ... rejected (0.0s)
 [3/794] already-done.pdf ... skipped (0.0s)
-Ingest complete — queued: 500, rejected: 12, errors: 3, skipped: 279, failed: 0 (4m 23s)
+Ingest complete — queued: 500, rejected: 12, errors: 3, skipped: 279 (4m 23s)
 ```
 
 ### Phase 2: Process (LLM)
-
-Processing invokes Claude to read the extracted text and build wiki pages.
-
-> **Security note:** The `process` command runs Claude with broad tool access (`--dangerously-skip-permissions`). Only process documents you trust, as source content could potentially trigger unintended actions via prompt injection.
 
 ```bash
 ai-wiki process
 ```
 
-This processes all queued items. For each item, Claude:
-1. Reads the extracted text
-2. Identifies entities, concepts, and claims
-3. Creates wiki pages with YAML frontmatter and `[[wikilinks]]`
-4. Updates the index and log
-5. Marks the item complete
+Invokes Claude to read each queued item's extracted text, create wiki pages with YAML frontmatter and `[[wikilinks]]`, update the index and log, and mark items complete.
 
-The wiki follows Obsidian conventions:
-- `entities/` -- people, organizations, tools
-- `concepts/` -- ideas, theories, techniques
-- `claims/` -- specific assertions with `data-point: true` tag
-- `sources/` -- summaries of ingested documents
-- `index.md` -- catalog of all pages
-- `log.md` -- chronological record of ingestions
-- `CLAUDE.md` -- schema telling the LLM how to maintain the wiki
+> **Security note:** The `process` command grants Claude broad tool access. Only process documents you trust.
 
 ### Monitor
 
@@ -190,118 +168,130 @@ The wiki follows Obsidian conventions:
 ai-wiki tui
 ```
 
-A terminal UI showing queue status with color-coded entries:
-- Gray: queued
-- Yellow: in progress
-- Green: complete
-- Red: error/rejected
-
-Press `Enter` on any terminal-state item to see details:
-- **Errors**: the error message
-- **Rejected**: the rejection reason
-- **Complete**: the full wiki page content
-
-Press `R` on an errored/rejected item to requeue it for retry.
+Terminal UI with color-coded queue status. Keyboard: `↑↓` navigate, `Enter` view details, `R` retry errored item, `q` quit.
 
 ### Error Recovery
 
 ```bash
-ai-wiki retry
+ai-wiki retry    # requeue items with text, then process
+ai-wiki clear    # delete errored items (re-ingest afterward)
 ```
 
-Requeues errored items that have extracted text in the processed directory, then runs `process` to build their wiki pages. Use this when text extraction succeeded but Claude timed out or the network failed.
+## Querying a Wiki with Claude
 
+Once your wiki has been built, you can query it directly from a Claude Code session. The wiki is just markdown files — Claude can read them with its built-in tools.
+
+### Direct Querying (no MCP needed)
+
+Start Claude Code in your wiki's directory:
 ```bash
-ai-wiki clear
+cd ~/wikis/rust
+claude
 ```
 
-Deletes all errored items from the queue. Use this for items where text extraction itself failed. After clearing, re-ingest the original files:
-
-```bash
-ai-wiki clear
-ai-wiki ingest ~/Downloads/*.pdf
+Then ask questions:
+```
+> What does this wiki say about the borrow checker?
+> Compare the async approaches described across all sources
+> Which books cover error handling? Summarize their perspectives.
+> What entities are connected to the concept of memory safety?
 ```
 
-The dedup check skips already-processed files and only picks up the ones that previously failed.
+Claude will read `wiki/index.md` to find relevant pages, then read those pages to answer your question. The wiki's `[[wikilinks]]` and frontmatter help Claude navigate the knowledge graph.
 
-### Queue Subcommands
+### Querying via MCP Server
 
-Low-level queue operations invoked by the Claude prompt. Not typically called by users directly.
-
+For richer integration, register the MCP server:
 ```bash
-ai-wiki queue claim               # Claim next queued item (prints tab-delimited: ID, path, type, parent)
-ai-wiki queue complete <ID> <path> # Mark item complete with wiki page path
-ai-wiki queue error <ID> <msg>    # Mark item as errored
+# Add to ~/.claude/settings.json or project .claude/settings.json
+```
+
+```json
+{
+  "mcpServers": {
+    "ai-wiki": {
+      "command": "ai-wiki-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+The MCP server reads `~/.ai-wiki/config.toml` and serves all registered wikis. Every tool call requires a `wiki` parameter specifying which wiki to operate on. Available tools:
+
+- `get_next_item(wiki)` — claim next queued item
+- `complete_item(wiki, id, wiki_page_path)` — mark item complete
+- `read_source(wiki, id)` — read extracted text
+- `read_page(wiki, path)` — read a wiki page
+- `write_page(wiki, path, content)` — create/update a wiki page
+- `list_pages(wiki, directory)` — list pages
+- `read_index(wiki)` — read index.md
+- `update_index(wiki, entry)` — append to index
+- `append_log(wiki, entry)` — append to log
+
+### Cross-Wiki Queries
+
+With the MCP server, Claude can query across multiple wikis in a single session:
+```
+> Compare what the rust wiki says about async with what the python wiki says about asyncio
+> Find all entities that appear in both the rust and ml wikis
 ```
 
 ## Utilities
 
 ### pdf-dump
 
-Diagnostic tool for inspecting how a PDF will be split into chapters.
+Diagnostic tool for inspecting how a PDF will be split into chapters:
 
 ```bash
-cargo run -p pdf-dump -- ~/Downloads/some-book.pdf
+pdf-dump ~/Downloads/some-book.pdf
 ```
 
-Output shows:
-1. **Table of contents** -- all outline entries with nesting level and page number
-2. **Split blocks** -- how the book would be divided into chapters (top-level entries only, with start/end page numbers)
-3. **Comparison** -- flags if the current splitting code would over-fragment the book by using sub-sections instead of just top-level entries
-
-Example:
-```
-File: /Users/you/Downloads/some-book.pdf
-Pages: 542
-
-TABLE OF CONTENTS (491 entries)
-  1. Contributors                         page 5
-  2. Preface                              page 22
-  3. Foundations of Agent Engineering      page 32
-  ...
-
-SPLIT BLOCKS (98 chapters from 121 top-level entries)
-  Block  Title                                   Start    End   Pages
-  ─────────────────────────────────────────────────────────────────
-      1  Contributors                                5      21     17
-      2  Preface                                    22      31     10
-      3  Foundations of Agent Engineering            32      48     17
-  ...
-
-Book detection: 121 top-level entries, 542 pages → BOOK (would split)
-```
-
-This is useful for understanding why a particular PDF was split the way it was, or for diagnosing issues with PDF bookmark structure.
+Shows the level-1 table of contents entries and the page ranges each chapter would produce.
 
 ## Project Structure
 
 ```
 ai-wiki/
 ├── crates/
-│   ├── ai-wiki-core/     # Library: config, queue, preprocessing, wiki operations
-│   ├── ai-wiki/          # CLI binary: ingest, tui, process
-│   ├── ai-wiki-mcp/      # MCP server: 11 tools for Claude Code integration
-│   └── pdf-dump/         # Diagnostic utility for PDF inspection
+│   ├── ai-wiki-core/     # Library: config, queue, preprocessing, wiki
+│   ├── ai-wiki/          # CLI: init, ingest, process, tui, retry, clear, list, queue
+│   ├── ai-wiki-mcp/      # MCP server: multi-wiki, 12 tools
+│   └── pdf-dump/         # PDF chapter inspection utility
 ├── docs/
-│   ├── design/           # Original design documents
-│   └── superpowers/      # Implementation plans and review findings
-├── wiki/                 # Generated Obsidian vault (gitignored content)
-├── processed/            # Extracted text files (gitignored)
-├── raw/                  # Split PDFs and extracted ZIPs (gitignored)
-├── ai-wiki.toml          # Configuration
-├── justfile              # Task runner recipes
+│   ├── design/           # Design documents
+│   └── superpowers/      # Specs, plans, reviews
+├── justfile              # Task runner
 └── README.md
+
+~/.ai-wiki/
+└── config.toml           # Central config with tool paths and wiki registry
+```
+
+Each wiki root:
+```
+~/wikis/rust/
+├── wiki/                 # Obsidian vault
+│   ├── entities/
+│   ├── concepts/
+│   ├── claims/
+│   ├── sources/
+│   ├── index.md
+│   ├── log.md
+│   └── CLAUDE.md
+├── processed/            # Extracted text
+├── raw/                  # Split PDFs
+└── ai-wiki.db            # Queue database
 ```
 
 ## Development
 
 ```bash
 just check      # Fast compile check
-just test       # Run all 76 tests
-just lint        # Clippy lints
-just ci          # Full CI pipeline (check + test + lint + fmt)
-just build       # Debug build
-just release     # Optimized release build
+just test       # Run all tests
+just lint       # Clippy lints
+just ci         # Full CI pipeline
+just deploy     # Install to ~/.cargo/bin
 ```
 
 ## License

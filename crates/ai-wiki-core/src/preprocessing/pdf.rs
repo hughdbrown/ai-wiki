@@ -132,9 +132,7 @@ pub fn extract_pdf_text(path: &Path, tools: &ToolsConfig) -> anyhow::Result<Stri
 
     // Fallback to pdftotext (poppler) via Command
     let pdftotext_result = super::run_tool_output(
-        Command::new(&tools.pdftotext_path)
-            .arg(path)
-            .arg("-"),
+        Command::new(&tools.pdftotext_path).arg(path).arg("-"),
         "pdftotext",
     );
 
@@ -195,14 +193,9 @@ fn ocr_pdf_text(path: &Path, tools: &ToolsConfig) -> anyhow::Result<String> {
 
     let mut full_text = String::new();
     for page_img in &pages {
-        let page_img_str = page_img
-            .to_str()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "page image path is not valid UTF-8: {}",
-                    page_img.display()
-                )
-            })?;
+        let page_img_str = page_img.to_str().ok_or_else(|| {
+            anyhow::anyhow!("page image path is not valid UTF-8: {}", page_img.display())
+        })?;
         let output = super::run_tool_output(
             Command::new(&tools.tesseract_path).args([page_img_str, "stdout"]),
             "tesseract",

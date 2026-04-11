@@ -50,14 +50,7 @@ fn setup_test_env() -> (tempfile::TempDir, String, PathBuf, WikiConfig) {
 fn run_ingest(config_path: &Path, wiki_name: &str, target: &str) -> Output {
     Command::new("cargo")
         .args([
-            "run",
-            "-p",
-            "ai-wiki",
-            "--",
-            "--wiki",
-            wiki_name,
-            "ingest",
-            target,
+            "run", "-p", "ai-wiki", "--", "--wiki", wiki_name, "ingest", target,
         ])
         .env("AI_WIKI_CONFIG", config_path.to_str().unwrap())
         .output()
