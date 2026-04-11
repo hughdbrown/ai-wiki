@@ -167,7 +167,6 @@ fn main() -> anyhow::Result<()> {
         Commands::List => list(),
         _ => {
             let app_config = AppConfig::load()?;
-            app_config.validate_tools()?;
             let wiki = app_config.resolve_wiki_auto(cli.wiki.as_deref())?;
 
             match cli.command {
@@ -252,7 +251,11 @@ fn init_wiki_dirs(wiki_config: &WikiConfig) -> anyhow::Result<()> {
 }
 
 fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> {
-    let dir = directory.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let dir = match directory {
+        Some(d) => d,
+        None => std::env::current_dir()
+            .map_err(|e| anyhow::anyhow!("failed to determine current directory: {e}"))?,
+    };
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let wiki_name = name.unwrap_or_else(|| {
         dir.file_name()

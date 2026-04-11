@@ -21,16 +21,15 @@ fn validate_path_for_prompt(path: &str, label: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn run(tools: &ToolsConfig, wiki: &WikiConfig) -> anyhow::Result<()> {
-    // We don't use tools directly in this function, but we validate it was loaded
-    let _ = tools;
+pub fn run(_tools: &ToolsConfig, wiki: &WikiConfig) -> anyhow::Result<()> {
 
-    // Validate paths before embedding them in the prompt
+    // Validate paths and wiki name before embedding them in the prompt
     let wiki_dir = wiki.wiki_dir().display().to_string();
     let processed_dir = wiki.processed_dir().display().to_string();
 
     validate_path_for_prompt(&wiki_dir, "Wiki directory")?;
     validate_path_for_prompt(&processed_dir, "Processed text directory")?;
+    validate_path_for_prompt(&wiki.name, "Wiki name")?;
 
     let queue = Queue::open(&wiki.database_path()).with_context(|| {
         format!(
@@ -221,6 +220,14 @@ mod tests {
         assert!(prompt.contains(&today));
         // Verify no raw sqlite3 commands
         assert!(!prompt.contains("sqlite3"));
+    }
+
+    #[test]
+    fn test_validate_path_rejects_single_quote_in_wiki_name() {
+        // A wiki name with a single quote would break shell syntax in the prompt
+        assert!(validate_path_for_prompt("my'wiki", "Wiki name").is_err());
+        assert!(validate_path_for_prompt("my-wiki", "Wiki name").is_ok());
+        assert!(validate_path_for_prompt("my_wiki", "Wiki name").is_ok());
     }
 
     #[test]
