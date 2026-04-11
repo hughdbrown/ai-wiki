@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use anyhow::Result;
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -9,7 +12,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use ai_wiki_core::config::AppConfig;
+use ai_wiki_core::config::{AppConfig, WikiConfig};
 use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 use ai_wiki_core::wiki::Wiki;
 
@@ -121,8 +124,41 @@ pub struct AppendLogRequest {
 
 #[derive(Clone)]
 pub struct WikiServer {
-    app_config: std::sync::Arc<AppConfig>,
+    app_config: Arc<AppConfig>,
+    /// Cached Queue connections per wiki name, shared across concurrent tool calls.
+    queue_cache: Arc<Mutex<HashMap<String, Arc<Mutex<Queue>>>>>,
     tool_router: ToolRouter<Self>,
+}
+
+impl WikiServer {
+    /// Resolve a wiki by name and return its config plus a cached, mutex-protected Queue.
+    fn resolve_queue(&self, wiki: &str) -> Result<(WikiConfig, Arc<Mutex<Queue>>), String> {
+        let wiki_config = self
+            .app_config
+            .resolve_wiki(wiki)
+            .map_err(|e| format!("{e}"))?;
+
+        let queue = {
+            let mut cache = self
+                .queue_cache
+                .lock()
+                .map_err(|e| format!("queue cache lock poisoned: {e}"))?;
+            cache
+                .entry(wiki.to_string())
+                .or_insert_with(|| {
+                    // Open the queue once and cache it; panic on failure is acceptable
+                    // during cache population since it indicates a broken wiki config.
+                    let q = Queue::open(&wiki_config.database_path())
+                        .unwrap_or_else(|e| {
+                            panic!("Failed to open queue for wiki '{wiki}': {e}")
+                        });
+                    Arc::new(Mutex::new(q))
+                })
+                .clone()
+        };
+
+        Ok((wiki_config, queue))
+    }
 }
 
 fn item_to_json(item: &QueueItem) -> serde_json::Value {
@@ -152,14 +188,9 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<GetNextItemRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let (_wiki_config, queue) = self.resolve_queue(&req.wiki)?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
-            let queue = Queue::open(&wiki_config.database_path())
-                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
+            let queue = queue.lock().map_err(|e| format!("queue lock poisoned: {e}"))?;
             let item = queue
                 .claim_next_queued()
                 .map_err(|e| format!("Queue error: {e}"))?;
@@ -181,14 +212,9 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<CompleteItemRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let (_wiki_config, queue) = self.resolve_queue(&req.wiki)?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
-            let queue = Queue::open(&wiki_config.database_path())
-                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
+            let queue = queue.lock().map_err(|e| format!("queue lock poisoned: {e}"))?;
             queue
                 .mark_complete(req.id, &req.wiki_page_path)
                 .map_err(|e| format!("Failed to mark complete: {e}"))?;
@@ -224,14 +250,9 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<RejectItemRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let (_wiki_config, queue) = self.resolve_queue(&req.wiki)?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
-            let queue = Queue::open(&wiki_config.database_path())
-                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
+            let queue = queue.lock().map_err(|e| format!("queue lock poisoned: {e}"))?;
             queue
                 .mark_rejected(req.id, &req.reason)
                 .map_err(|e| format!("Failed to mark rejected: {e}"))?;
@@ -251,14 +272,9 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ErrorItemRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let (_wiki_config, queue) = self.resolve_queue(&req.wiki)?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
-            let queue = Queue::open(&wiki_config.database_path())
-                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
+            let queue = queue.lock().map_err(|e| format!("queue lock poisoned: {e}"))?;
             queue
                 .mark_error(req.id, &req.message)
                 .map_err(|e| format!("Failed to mark error: {e}"))?;
@@ -280,17 +296,12 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ListItemsRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let (_wiki_config, queue) = self.resolve_queue(&req.wiki)?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
-            let queue = Queue::open(&wiki_config.database_path())
-                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
+            let queue = queue.lock().map_err(|e| format!("queue lock poisoned: {e}"))?;
             let status_filter: Option<ItemStatus> = match &req.status {
                 Some(s) => {
-                    let parsed =
+                    let parsed: ItemStatus =
                         ItemStatus::parse(s).ok_or_else(|| format!("Invalid status: {s}"))?;
                     Some(parsed)
                 }
@@ -316,18 +327,15 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ReadSourceRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let (wiki_config, queue) = self.resolve_queue(&req.wiki)?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
-            let queue = Queue::open(&wiki_config.database_path())
-                .map_err(|e| format!("Failed to open queue for wiki '{wiki_name}': {e}"))?;
             // Verify item exists in queue before reading
-            queue
-                .get_item(req.id)
-                .map_err(|e| format!("item {}: {e}", req.id))?;
+            {
+                let queue = queue.lock().map_err(|e| format!("queue lock poisoned: {e}"))?;
+                queue
+                    .get_item(req.id)
+                    .map_err(|e| format!("item {}: {e}", req.id))?;
+            }
             let path = wiki_config.processed_text_path(req.id);
             std::fs::read_to_string(&path).map_err(|_| {
                 format!(
@@ -348,12 +356,11 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ReadPageRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let wiki_config = self
+            .app_config
+            .resolve_wiki(&req.wiki)
+            .map_err(|e| format!("{e}"))?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
             let wiki = Wiki::new(wiki_config.wiki_dir());
             wiki.read_page(&req.path).map_err(|e| format!("{e}"))
         })
@@ -369,12 +376,11 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<WritePageRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let wiki_config = self
+            .app_config
+            .resolve_wiki(&req.wiki)
+            .map_err(|e| format!("{e}"))?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
             let wiki = Wiki::new(wiki_config.wiki_dir());
             wiki.write_page(&req.path, &req.content)
                 .map_err(|e| format!("{e}"))?;
@@ -392,12 +398,11 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ListPagesRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let wiki_config = self
+            .app_config
+            .resolve_wiki(&req.wiki)
+            .map_err(|e| format!("{e}"))?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
             let wiki = Wiki::new(wiki_config.wiki_dir());
             let pages = wiki
                 .list_pages(req.directory.as_deref())
@@ -414,12 +419,11 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ReadIndexRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let wiki_config = self
+            .app_config
+            .resolve_wiki(&req.wiki)
+            .map_err(|e| format!("{e}"))?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
             let wiki = Wiki::new(wiki_config.wiki_dir());
             wiki.read_index().map_err(|e| format!("{e}"))
         })
@@ -433,12 +437,11 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<UpdateIndexRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let wiki_config = self
+            .app_config
+            .resolve_wiki(&req.wiki)
+            .map_err(|e| format!("{e}"))?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
             let wiki = Wiki::new(wiki_config.wiki_dir());
             wiki.update_index(&req.entry).map_err(|e| format!("{e}"))?;
             Ok(format!("Updated index with: {}", req.entry))
@@ -453,12 +456,11 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<AppendLogRequest>,
     ) -> Result<String, String> {
-        let app_config = self.app_config.clone();
-        let wiki_name = req.wiki;
+        let wiki_config = self
+            .app_config
+            .resolve_wiki(&req.wiki)
+            .map_err(|e| format!("{e}"))?;
         tokio::task::spawn_blocking(move || {
-            let wiki_config = app_config
-                .resolve_wiki(&wiki_name)
-                .map_err(|e| format!("{e}"))?;
             let wiki = Wiki::new(wiki_config.wiki_dir());
             wiki.append_log(&req.entry).map_err(|e| format!("{e}"))?;
             Ok(format!("Logged: {}", req.entry))
@@ -504,23 +506,28 @@ mod tests {
 
         std::fs::create_dir_all(dir.path().join("processed")).unwrap();
 
-        // Create the database so it exists for tool calls
-        let _queue = Queue::open(&dir.path().join("ai-wiki.db")).unwrap();
-
         let mut app_config = AppConfig::default();
         app_config.register_wiki("test".to_string(), dir.path().to_path_buf());
 
+        // Use the production path derivation so tests stay in sync
+        let wiki_config = app_config.resolve_wiki("test").unwrap();
+        let _queue = Queue::open(&wiki_config.database_path()).unwrap();
+
         let server = WikiServer {
             app_config: Arc::new(app_config),
+            queue_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             tool_router: WikiServer::tool_router(),
         };
 
         (server, dir)
     }
 
-    /// Helper to open the queue for the test wiki (re-opens from disk each time, like the server does).
+    /// Helper to open the queue for the test wiki using the production path derivation.
     fn open_test_queue(dir: &tempfile::TempDir) -> Queue {
-        Queue::open(&dir.path().join("ai-wiki.db")).unwrap()
+        let mut app_config = AppConfig::default();
+        app_config.register_wiki("test".to_string(), dir.path().to_path_buf());
+        let wiki_config = app_config.resolve_wiki("test").unwrap();
+        Queue::open(&wiki_config.database_path()).unwrap()
     }
 
     // ─── Queue Tool Tests ─────────────────────────────────────────────────────
@@ -983,8 +990,28 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Initialize wiki directory structures and reset in-progress items for each wiki
+    for name in app_config.wikis.keys() {
+        let wiki_config = app_config.resolve_wiki(name)?;
+
+        // Ensure wiki directory structure exists
+        let wiki = Wiki::new(wiki_config.wiki_dir());
+        wiki.init()?;
+
+        // Reset any items left in_progress from a previous crash
+        let db_path = wiki_config.database_path();
+        if db_path.exists() {
+            let queue = Queue::open(&db_path)?;
+            let reset_count = queue.reset_in_progress()?;
+            if reset_count > 0 {
+                eprintln!("  [{name}] reset {reset_count} in-progress item(s) back to queued");
+            }
+        }
+    }
+
     let server = WikiServer {
-        app_config: std::sync::Arc::new(app_config),
+        app_config: Arc::new(app_config),
+        queue_cache: Arc::new(Mutex::new(HashMap::new())),
         tool_router: WikiServer::tool_router(),
     };
 
