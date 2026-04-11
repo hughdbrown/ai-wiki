@@ -6,6 +6,14 @@ use anyhow::Context;
 use ai_wiki_core::config::WikiConfig;
 use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 
+pub struct ProcessOptions {
+    /// If true, pass ANTHROPIC_API_KEY to child process (pay-as-you-go).
+    /// If false, strip it so Claude CLI uses the Pro subscription.
+    pub use_api_key: bool,
+    /// Optional model override (e.g., "sonnet", "opus").
+    pub model: Option<String>,
+}
+
 /// Validate that a path string contains only safe characters for prompt embedding.
 /// Permits alphanumerics, `.`, `_`, `/`, `-`, and space.
 fn validate_path_for_prompt(path: &str, label: &str) -> anyhow::Result<()> {
@@ -21,7 +29,7 @@ fn validate_path_for_prompt(path: &str, label: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
+pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
     let wiki_dir = wiki.wiki_dir().display().to_string();
     let processed_dir = wiki.processed_dir().display().to_string();
 
@@ -90,7 +98,7 @@ pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
         let prompt = build_item_prompt(wiki, &item, &text_paths);
 
         let item_start = std::time::Instant::now();
-        match run_claude_session(&prompt) {
+        match run_claude_session(&prompt, opts) {
             Ok(()) => {
                 let elapsed = item_start.elapsed();
                 // Verify Claude marked it complete; if not, mark error
@@ -186,11 +194,23 @@ fn gather_text_paths(item: &QueueItem, queue: &Queue, wiki: &WikiConfig) -> Vec<
 }
 
 /// Spawn a fresh Claude session with the given prompt.
-fn run_claude_session(prompt: &str) -> anyhow::Result<()> {
-    let mut child = Command::new("claude")
-        .arg("--print")
+fn run_claude_session(prompt: &str, opts: &ProcessOptions) -> anyhow::Result<()> {
+    let mut cmd = Command::new("claude");
+    cmd.arg("--print")
         .arg("--verbose")
-        .arg("--dangerously-skip-permissions")
+        .arg("--dangerously-skip-permissions");
+
+    if let Some(ref model) = opts.model {
+        cmd.arg("--model").arg(model);
+    }
+
+    // Strip ANTHROPIC_API_KEY so Claude CLI uses Pro subscription auth,
+    // unless the user explicitly chose API key auth.
+    if !opts.use_api_key {
+        cmd.env_remove("ANTHROPIC_API_KEY");
+    }
+
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

@@ -107,7 +107,17 @@ enum Commands {
                       Requires the 'claude' CLI to be installed and on PATH.\n\n\
                       Book parents (items with chapters) are summarized from their children's text."
     )]
-    Process,
+    Process {
+        /// Authentication method for Claude CLI sessions.
+        /// "pro" uses your Claude Code Pro subscription (default).
+        /// "api" uses the ANTHROPIC_API_KEY environment variable.
+        #[arg(long, default_value = "pro", value_parser = ["pro", "api"])]
+        auth: String,
+
+        /// Model to use (e.g., "sonnet", "opus", "claude-sonnet-4-6")
+        #[arg(long)]
+        model: Option<String>,
+    },
 
     /// Retry errored items that have processed text available
     #[command(
@@ -172,8 +182,18 @@ fn main() -> anyhow::Result<()> {
             match cli.command {
                 Commands::Ingest { path } => ingest::run(&app_config.tools, &wiki, &path),
                 Commands::Tui => tui::run(&wiki),
-                Commands::Process => process::run(&wiki),
-                Commands::Retry => retry(&wiki),
+                Commands::Process { auth, model } => {
+                    // CLI args override config; config provides defaults
+                    let cfg = &app_config.process;
+                    let effective_auth = if auth != "pro" { &auth } else { &cfg.auth };
+                    let effective_model = model.or_else(|| cfg.model.clone());
+                    let opts = process::ProcessOptions {
+                        use_api_key: effective_auth == "api",
+                        model: effective_model,
+                    };
+                    process::run(&wiki, &opts)
+                }
+                Commands::Retry => retry(&wiki, &app_config.process),
                 Commands::Clear => clear(&wiki),
                 Commands::Queue(cmd) => queue_cmd(&wiki, cmd),
                 Commands::Init { .. } | Commands::List => unreachable!(),
@@ -182,7 +202,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn retry(wiki: &WikiConfig) -> anyhow::Result<()> {
+fn retry(wiki: &WikiConfig, process_cfg: &ai_wiki_core::config::ProcessConfig) -> anyhow::Result<()> {
     let queue = ai_wiki_core::queue::Queue::open(&wiki.database_path())?;
 
     let error_items = queue.list_items(Some(&ai_wiki_core::queue::ItemStatus::Error))?;
@@ -207,7 +227,11 @@ fn retry(wiki: &WikiConfig) -> anyhow::Result<()> {
     if retried > 0 {
         println!("Running process to build wiki pages...");
         println!();
-        process::run(wiki)?;
+        let opts = process::ProcessOptions {
+                use_api_key: process_cfg.auth == "api",
+                model: process_cfg.model.clone(),
+            };
+            process::run(wiki, &opts)?;
     }
 
     Ok(())
