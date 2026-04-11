@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 /// Global application config, read from ~/.ai-wiki/config.toml
@@ -131,7 +132,7 @@ impl AppConfig {
     /// Load from a specific path (useful for tests).
     pub fn load_from(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("failed to read config file {}: {}", path.display(), e))?;
+            .with_context(|| format!("failed to read config file {}", path.display()))?;
         let config: AppConfig = toml::from_str(&content).map_err(|e| {
             anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e)
         })?;
@@ -193,9 +194,16 @@ impl AppConfig {
         for (name, entry) in &self.wikis {
             match std::fs::canonicalize(&entry.root) {
                 Ok(canon_root) => {
-                    let cwd = canon_cwd.as_ref().unwrap_or(&raw_cwd);
-                    if cwd.starts_with(&canon_root) {
-                        let depth = canon_root.components().count();
+                    if let Some(ref cc) = canon_cwd {
+                        if cc.starts_with(&canon_root) {
+                            let depth = canon_root.components().count();
+                            if best.as_ref().is_none_or(|(d, _, _)| depth > *d) {
+                                best = Some((depth, name.as_str(), entry));
+                            }
+                        }
+                    } else if raw_cwd.starts_with(&entry.root) {
+                        // CWD can't be canonicalized — fall back to raw vs raw
+                        let depth = entry.root.components().count();
                         if best.as_ref().is_none_or(|(d, _, _)| depth > *d) {
                             best = Some((depth, name.as_str(), entry));
                         }
