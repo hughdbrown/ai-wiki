@@ -172,8 +172,8 @@ fn main() -> anyhow::Result<()> {
             match cli.command {
                 Commands::Ingest { path } => ingest::run(&app_config.tools, &wiki, &path),
                 Commands::Tui => tui::run(&wiki),
-                Commands::Process => process::run(&app_config.tools, &wiki),
-                Commands::Retry => retry(&app_config, &wiki),
+                Commands::Process => process::run(&wiki),
+                Commands::Retry => retry(&wiki),
                 Commands::Clear => clear(&wiki),
                 Commands::Queue(cmd) => queue_cmd(&wiki, cmd),
                 Commands::Init { .. } | Commands::List => unreachable!(),
@@ -182,7 +182,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn retry(app_config: &AppConfig, wiki: &WikiConfig) -> anyhow::Result<()> {
+fn retry(wiki: &WikiConfig) -> anyhow::Result<()> {
     let queue = ai_wiki_core::queue::Queue::open(&wiki.database_path())?;
 
     let error_items = queue.list_items(Some(&ai_wiki_core::queue::ItemStatus::Error))?;
@@ -207,7 +207,7 @@ fn retry(app_config: &AppConfig, wiki: &WikiConfig) -> anyhow::Result<()> {
     if retried > 0 {
         println!("Running process to build wiki pages...");
         println!();
-        process::run(&app_config.tools, wiki)?;
+        process::run(wiki)?;
     }
 
     Ok(())

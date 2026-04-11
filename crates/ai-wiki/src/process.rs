@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::Context;
 
-use ai_wiki_core::config::{ToolsConfig, WikiConfig};
+use ai_wiki_core::config::WikiConfig;
 use ai_wiki_core::queue::Queue;
 
 /// Validate that a path string contains only safe characters for prompt embedding.
@@ -14,15 +14,14 @@ fn validate_path_for_prompt(path: &str, label: &str) -> anyhow::Result<()> {
         .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '/' | '-' | ' '))
     {
         anyhow::bail!(
-            "{label} path contains unsafe character {c:?}: {path}\n\
-             Rename the path to remove shell metacharacters."
+            "{label} contains unsafe character {c:?}: {path}\n\
+             Rename the value to remove shell metacharacters."
         );
     }
     Ok(())
 }
 
-pub fn run(_tools: &ToolsConfig, wiki: &WikiConfig) -> anyhow::Result<()> {
-
+pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
     // Validate paths and wiki name before embedding them in the prompt
     let wiki_dir = wiki.wiki_dir().display().to_string();
     let processed_dir = wiki.processed_dir().display().to_string();
