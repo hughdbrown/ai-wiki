@@ -159,26 +159,23 @@ fn run_app<B: Backend>(
                     }
                     KeyCode::Char('n') => {
                         // Jump to next top-level item (parent_id is None)
-                        if let Some(sel) = table_state.selected() {
-                            if let Some(pos) = items[sel + 1..]
+                        if let Some(sel) = table_state.selected()
+                            && let Some(pos) = items[sel + 1..]
                                 .iter()
                                 .position(|it| it.parent_id.is_none())
-                            {
-                                table_state.select(Some(sel + 1 + pos));
-                            }
+                        {
+                            table_state.select(Some(sel + 1 + pos));
                         }
                     }
                     KeyCode::Char('N') => {
                         // Jump to previous top-level item (parent_id is None)
                         if let Some(sel) = table_state.selected()
                             && sel > 0
-                        {
-                            if let Some(pos) = items[..sel]
+                            && let Some(pos) = items[..sel]
                                 .iter()
                                 .rposition(|it| it.parent_id.is_none())
-                            {
-                                table_state.select(Some(pos));
-                            }
+                        {
+                            table_state.select(Some(pos));
                         }
                     }
                     KeyCode::Char('R') => {

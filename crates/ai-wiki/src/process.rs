@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -118,7 +118,7 @@ pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_progress_loop(db_path: &PathBuf, initial_queued: usize, stop: &AtomicBool) {
+fn print_progress_loop(db_path: &Path, initial_queued: usize, stop: &AtomicBool) {
     let mut last_complete: u64 = 0;
     let mut last_error: u64 = 0;
 

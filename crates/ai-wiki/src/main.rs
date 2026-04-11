@@ -359,11 +359,11 @@ fn list() -> anyhow::Result<()> {
     let app_config = match AppConfig::load() {
         Ok(config) => config,
         Err(e) => {
-            if let Some(io_err) = e.root_cause().downcast_ref::<std::io::Error>() {
-                if io_err.kind() == std::io::ErrorKind::NotFound {
-                    println!("No wikis registered. Run 'ai-wiki init' to create one.");
-                    return Ok(());
-                }
+            if let Some(io_err) = e.root_cause().downcast_ref::<std::io::Error>()
+                && io_err.kind() == std::io::ErrorKind::NotFound
+            {
+                println!("No wikis registered. Run 'ai-wiki init' to create one.");
+                return Ok(());
             }
             return Err(e);
         }
