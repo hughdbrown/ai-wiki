@@ -138,11 +138,13 @@ ai-wiki ingest @my-reading-list.txt
 
 What happens during ingest:
 
-- **PDFs** with a table of contents are split into chapters via `qpdf`. Text extracted via pdf-extract, pdftotext, or OCR (pdftoppm + tesseract).
+- **PDFs** with a table of contents are split into chapters via `qpdf`. Text extracted via pdf-extract, pdftotext, or OCR (pdftoppm + tesseract). Front-matter chapters (cover, copyright, TOC) with no extractable text are rejected gracefully.
 - **Markdown/text** files are copied directly.
 - **ZIP** archives are extracted and each file processed recursively.
 - **Audio/video** (MP4, MKV, etc.) are transcribed via ffmpeg + whisper-cpp.
 - **Unknown file types** are rejected.
+
+PDF processing is resilient against malformed files: panics from third-party PDF crates are caught silently, stack overflows are isolated to a dedicated 16MB thread, and `qpdf` warnings are accepted without failing the split.
 
 Duplicate files are detected and skipped automatically. Progress is shown per file:
 ```
@@ -158,7 +160,35 @@ Ingest complete — queued: 500, rejected: 12, errors: 3, skipped: 279 (4m 23s)
 ai-wiki process
 ```
 
-Invokes Claude to read each queued item's extracted text, create wiki pages with YAML frontmatter and `[[wikilinks]]`, update the index and log, and mark items complete.
+Each queued item gets its own fresh Claude session with a two-pass prompt:
+1. **Pass 1:** Read the source text, create a source summary page and entity pages.
+2. **Pass 2:** Re-read the text, extract concepts and claims into dedicated wiki pages with cross-references.
+
+Book parents (PDFs with chapters) have all their children's text gathered and processed in a single session.
+
+**Authentication:** By default, `process` uses your Claude Code Pro subscription. To use an API key instead:
+
+```bash
+ai-wiki process --auth api     # uses ANTHROPIC_API_KEY
+ai-wiki process --auth pro     # uses Pro subscription (default)
+```
+
+**Model selection:**
+
+```bash
+ai-wiki process --model opus
+ai-wiki process --model sonnet
+```
+
+Both `auth` and `model` can be set as defaults in `~/.ai-wiki/config.toml`:
+
+```toml
+[process]
+auth = "pro"
+model = "sonnet"
+```
+
+CLI flags override the config.
 
 > **Security note:** The `process` command grants Claude broad tool access. Only process documents you trust.
 
@@ -168,7 +198,17 @@ Invokes Claude to read each queued item's extracted text, create wiki pages with
 ai-wiki tui
 ```
 
-Terminal UI with color-coded queue status. Keyboard: `↑↓` navigate, `Enter` view details, `R` retry errored item, `q` quit.
+Terminal UI with color-coded queue status. Keyboard shortcuts:
+
+| Key | Action |
+|-----|--------|
+| `↑`/`↓` | Navigate items |
+| `n`/`N` | Jump to next/previous book (skip chapters) |
+| `g`/`G` | Jump to top/bottom |
+| `Enter` | View item details |
+| `R` | Retry errored/rejected item |
+| `r` | Refresh |
+| `q` | Quit |
 
 ### Error Recovery
 
