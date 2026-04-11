@@ -358,9 +358,14 @@ fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> 
 fn list() -> anyhow::Result<()> {
     let app_config = match AppConfig::load() {
         Ok(config) => config,
-        Err(_) => {
-            println!("No wikis registered. Run 'ai-wiki init' to create one.");
-            return Ok(());
+        Err(e) => {
+            if let Some(io_err) = e.root_cause().downcast_ref::<std::io::Error>() {
+                if io_err.kind() == std::io::ErrorKind::NotFound {
+                    println!("No wikis registered. Run 'ai-wiki init' to create one.");
+                    return Ok(());
+                }
+            }
+            return Err(e);
         }
     };
     if app_config.wikis.is_empty() {

@@ -160,16 +160,34 @@ impl AppConfig {
     /// Check if the current working directory is at or under any wiki root.
     /// When multiple wiki roots overlap, returns the most specific (longest) match.
     pub fn find_wiki_by_cwd(&self) -> Option<WikiConfig> {
-        let cwd = std::fs::canonicalize(std::env::current_dir().ok()?).ok()?;
+        let raw_cwd = std::env::current_dir().ok()?;
+        let canon_cwd = std::fs::canonicalize(&raw_cwd).ok();
         let mut best: Option<(usize, &str, &WikiEntry)> = None;
         for (name, entry) in &self.wikis {
-            let Some(canon_root) = std::fs::canonicalize(&entry.root).ok() else {
-                continue;
-            };
-            if cwd.starts_with(&canon_root) {
-                let depth = canon_root.components().count();
-                if best.as_ref().is_none_or(|(d, _, _)| depth > *d) {
-                    best = Some((depth, name.as_str(), entry));
+            match std::fs::canonicalize(&entry.root) {
+                Ok(canon_root) => {
+                    let cwd = canon_cwd.as_ref().unwrap_or(&raw_cwd);
+                    if cwd.starts_with(&canon_root) {
+                        let depth = canon_root.components().count();
+                        if best.as_ref().is_none_or(|(d, _, _)| depth > *d) {
+                            best = Some((depth, name.as_str(), entry));
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: could not resolve wiki '{}' root {}: {}",
+                        name,
+                        entry.root.display(),
+                        e
+                    );
+                    // Fall back to non-canonicalized path comparison
+                    if raw_cwd.starts_with(&entry.root) {
+                        let depth = entry.root.components().count();
+                        if best.as_ref().is_none_or(|(d, _, _)| depth > *d) {
+                            best = Some((depth, name.as_str(), entry));
+                        }
+                    }
                 }
             }
         }
