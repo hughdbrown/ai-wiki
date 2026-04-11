@@ -1,10 +1,9 @@
 use std::io::Write;
-use std::path::Path;
 use std::process::{Command, Stdio};
 
 use anyhow::Context;
 
-use ai_wiki_core::config::Config;
+use ai_wiki_core::config::{ToolsConfig, WikiConfig};
 use ai_wiki_core::queue::Queue;
 
 /// Validate that a path string contains only safe characters for prompt embedding.
@@ -22,20 +21,21 @@ fn validate_path_for_prompt(path: &str, label: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn run(config: &Config, config_path: &Path) -> anyhow::Result<()> {
+pub fn run(tools: &ToolsConfig, wiki: &WikiConfig) -> anyhow::Result<()> {
+    // We don't use tools directly in this function, but we validate it was loaded
+    let _ = tools;
+
     // Validate paths before embedding them in the prompt
-    let wiki_dir = config.paths.wiki_dir.display().to_string();
-    let processed_dir = config.paths.processed_dir.display().to_string();
-    let config_path_str = config_path.display().to_string();
+    let wiki_dir = wiki.wiki_dir().display().to_string();
+    let processed_dir = wiki.processed_dir().display().to_string();
 
     validate_path_for_prompt(&wiki_dir, "Wiki directory")?;
     validate_path_for_prompt(&processed_dir, "Processed text directory")?;
-    validate_path_for_prompt(&config_path_str, "Config")?;
 
-    let queue = Queue::open(&config.paths.database_path).with_context(|| {
+    let queue = Queue::open(&wiki.database_path()).with_context(|| {
         format!(
             "failed to open queue database at {}",
-            config.paths.database_path.display()
+            wiki.database_path().display()
         )
     })?;
 
@@ -54,7 +54,7 @@ pub fn run(config: &Config, config_path: &Path) -> anyhow::Result<()> {
     let total = queued_count as usize;
     println!("Queue has {total} item(s). Processing all.");
 
-    let prompt = build_prompt(config, &config_path_str, total);
+    let prompt = build_prompt(wiki, total);
 
     eprintln!("WARNING: This will grant the Claude CLI permission to run commands on your system.");
     eprintln!("Source documents may contain prompt injection attacks that could lead to");
@@ -105,16 +105,21 @@ pub fn run(config: &Config, config_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_prompt(config: &Config, config_path: &str, total: usize) -> String {
+fn build_prompt(wiki: &WikiConfig, total: usize) -> String {
+    let wiki_dir = wiki.wiki_dir().display().to_string();
+    let processed_dir = wiki.processed_dir().display().to_string();
+    let wiki_name = &wiki.name;
+
     format!(
         r#"You are processing source documents from an ai-wiki queue into an Obsidian wiki.
 
 ## Setup
 
+- **Wiki:** {wiki_name}
 - **Wiki directory:** {wiki_dir}
 - **Processed text directory:** {processed_dir}
 - **Total items:** {total}
-- **CLI binary:** `ai-wiki --config '{config_path}'`
+- **CLI binary:** `ai-wiki --wiki '{wiki_name}'`
 
 ## Instructions
 
@@ -122,7 +127,7 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
 
 1. **Claim the next item:**
    ```bash
-   ai-wiki --config '{config_path}' queue claim
+   ai-wiki --wiki '{wiki_name}' queue claim
    ```
    This atomically claims the oldest queued item and prints its details as tab-separated fields:
    `<ID>\t<file_path>\t<file_type>\t<parent_id_or_none>`
@@ -132,7 +137,7 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
    - If the item has children (it's a book parent), read the children's processed text instead.
    - If no text is available, mark as error and move to the next item:
      ```bash
-     ai-wiki --config '{config_path}' queue error <ID> "No processed text available"
+     ai-wiki --wiki '{wiki_name}' queue error <ID> "No processed text available"
      ```
 
 3. **Extract knowledge** from the text:
@@ -163,7 +168,7 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
 
 7. **Mark complete:**
    ```bash
-   ai-wiki --config '{config_path}' queue complete <ID> "sources/<slug>.md"
+   ai-wiki --wiki '{wiki_name}' queue complete <ID> "sources/<slug>.md"
    ```
    For book parents, also mark all children complete with the same wiki_page_path.
 
@@ -184,9 +189,9 @@ Process queued items one at a time using the `ai-wiki queue` subcommands. For ea
 
 Begin processing now.
 "#,
-        config_path = config_path,
-        wiki_dir = config.paths.wiki_dir.display(),
-        processed_dir = config.paths.processed_dir.display(),
+        wiki_name = wiki_name,
+        wiki_dir = wiki_dir,
+        processed_dir = processed_dir,
         total = total,
         today = chrono::Utc::now().format("%Y-%m-%d"),
     )
@@ -195,18 +200,22 @@ Begin processing now.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_build_prompt_contains_expected_values() {
-        let config = Config::default();
-        let prompt = build_prompt(&config, "my-config.toml", 5);
+        let wiki = WikiConfig {
+            name: "test-wiki".to_string(),
+            root: PathBuf::from("/tmp/test-wiki"),
+        };
+        let prompt = build_prompt(&wiki, 5);
 
-        assert!(prompt.contains("ai-wiki --config 'my-config.toml' queue claim"));
-        assert!(prompt.contains("ai-wiki --config 'my-config.toml' queue complete"));
-        assert!(prompt.contains("ai-wiki --config 'my-config.toml' queue error"));
+        assert!(prompt.contains("ai-wiki --wiki 'test-wiki' queue claim"));
+        assert!(prompt.contains("ai-wiki --wiki 'test-wiki' queue complete"));
+        assert!(prompt.contains("ai-wiki --wiki 'test-wiki' queue error"));
         assert!(prompt.contains("**Total items:** 5"));
-        assert!(prompt.contains(&config.paths.wiki_dir.display().to_string()));
-        assert!(prompt.contains(&config.paths.processed_dir.display().to_string()));
+        assert!(prompt.contains(&wiki.wiki_dir().display().to_string()));
+        assert!(prompt.contains(&wiki.processed_dir().display().to_string()));
         // Verify date format YYYY-MM-DD appears
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         assert!(prompt.contains(&today));

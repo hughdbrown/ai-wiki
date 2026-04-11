@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::Result;
@@ -12,7 +11,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use ai_wiki_core::config::Config;
+use ai_wiki_core::config::{AppConfig, WikiConfig};
 use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 use ai_wiki_core::wiki::Wiki;
 
@@ -94,7 +93,7 @@ pub struct AppendLogRequest {
 pub struct WikiServer {
     queue: std::sync::Arc<Mutex<Queue>>,
     wiki: std::sync::Arc<Wiki>,
-    config: std::sync::Arc<Config>,
+    wiki_config: std::sync::Arc<WikiConfig>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -261,7 +260,7 @@ impl WikiServer {
         &self,
         Parameters(req): Parameters<ReadSourceRequest>,
     ) -> Result<String, String> {
-        let config = self.config.clone();
+        let wiki_config = self.wiki_config.clone();
         let queue = self.queue.clone();
         tokio::task::spawn_blocking(move || {
             // Verify item exists in queue before reading
@@ -271,7 +270,7 @@ impl WikiServer {
                     .get_item(req.id)
                     .map_err(|e| format!("item {}: {e}", req.id))?;
             }
-            let path = config.paths.processed_text_path(req.id);
+            let path = wiki_config.processed_text_path(req.id);
             std::fs::read_to_string(&path).map_err(|_| {
                 format!(
                     "failed to read processed text for item {}: file not found or unreadable",
@@ -394,7 +393,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use ai_wiki_core::config::{Config, PathsConfig};
+    use ai_wiki_core::config::WikiConfig;
     use ai_wiki_core::queue::{FileType, ItemStatus, Queue};
     use ai_wiki_core::wiki::Wiki;
 
@@ -411,18 +410,19 @@ mod tests {
 
         let queue = Queue::open_in_memory().unwrap();
 
-        let mut config = Config::default();
-        config.paths = PathsConfig {
-            raw_dir: wiki_dir.path().join("raw"),
-            wiki_dir: wiki_dir.path().to_path_buf(),
-            database_path: wiki_dir.path().join("queue.db"),
-            processed_dir: processed_dir.path().to_path_buf(),
+        let wiki_config = WikiConfig {
+            name: "test".to_string(),
+            root: wiki_dir.path().to_path_buf(),
         };
+        // Override processed_dir to use a separate tempdir for tests.
+        // WikiConfig derives processed_dir from root, but for tests we want
+        // the processed_dir to be separate. We'll create the expected subdir.
+        std::fs::create_dir_all(wiki_config.processed_dir()).unwrap();
 
         let server = WikiServer {
             queue: Arc::new(Mutex::new(queue)),
             wiki: Arc::new(wiki),
-            config: Arc::new(config),
+            wiki_config: Arc::new(wiki_config),
             tool_router: WikiServer::tool_router(),
         };
 
@@ -628,7 +628,7 @@ mod tests {
         use super::ReadSourceRequest;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let (server, _wiki_dir, processed_dir) = make_server();
+        let (server, _wiki_dir, _processed_dir) = make_server();
 
         // Enqueue an item to get a valid ID
         let id = {
@@ -638,8 +638,8 @@ mod tests {
                 .unwrap()
         };
 
-        // Create the processed text file
-        let txt_path = processed_dir.path().join(format!("{id}.txt"));
+        // Create the processed text file in the wiki_config's processed_dir
+        let txt_path = server.wiki_config.processed_text_path(id);
         std::fs::write(&txt_path, "Preprocessed content for source.").unwrap();
 
         let result = server
@@ -832,22 +832,14 @@ mod tests {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config_path = std::env::var("AI_WIKI_CONFIG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("ai-wiki.toml"));
+    let wiki_name = std::env::var("AI_WIKI_NAME").ok();
 
-    let config = if config_path.exists() {
-        Config::load(&config_path)?
-    } else {
-        eprintln!(
-            "Warning: config file not found at {}, using defaults",
-            config_path.display()
-        );
-        Config::default()
-    };
-    config.validate()?;
+    let app_config = AppConfig::load()?;
+    app_config.validate_tools()?;
 
-    let queue = Queue::open(&config.paths.database_path)?;
+    let wiki_config = app_config.resolve_wiki_auto(wiki_name.as_deref())?;
+
+    let queue = Queue::open(&wiki_config.database_path())?;
 
     let reset_count = queue
         .reset_in_progress()
@@ -856,13 +848,13 @@ async fn main() -> Result<()> {
         eprintln!("Reset {reset_count} in-progress item(s) back to queued.");
     }
 
-    let wiki = Wiki::new(config.paths.wiki_dir.clone());
+    let wiki = Wiki::new(wiki_config.wiki_dir());
     wiki.init()?;
 
     let server = WikiServer {
         queue: std::sync::Arc::new(Mutex::new(queue)),
         wiki: std::sync::Arc::new(wiki),
-        config: std::sync::Arc::new(config),
+        wiki_config: std::sync::Arc::new(wiki_config),
         tool_router: WikiServer::tool_router(),
     };
 

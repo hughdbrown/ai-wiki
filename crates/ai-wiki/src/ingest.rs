@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use ai_wiki_core::config::Config;
+use ai_wiki_core::config::{ToolsConfig, WikiConfig};
 use ai_wiki_core::preprocessing::pdf::PdfClassification;
 use ai_wiki_core::preprocessing::{
     FileClassification, classify_pdf, detect_file_type, extract_audio, extract_pdf_text,
@@ -30,11 +30,11 @@ impl IngestResult {
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 
-pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
-    let queue = Queue::open(&config.paths.database_path).with_context(|| {
+pub fn run(tools: &ToolsConfig, wiki: &WikiConfig, path_str: &str) -> anyhow::Result<()> {
+    let queue = Queue::open(&wiki.database_path()).with_context(|| {
         format!(
             "failed to open queue database at {}",
-            config.paths.database_path.display()
+            wiki.database_path().display()
         )
     })?;
 
@@ -62,7 +62,7 @@ pub fn run(config: &Config, path_str: &str) -> anyhow::Result<()> {
         eprint!("[{}/{}] {file_name} ... ", i + 1, total);
 
         let item_start = std::time::Instant::now();
-        match process_file(file, config, &queue, None, 0) {
+        match process_file(file, tools, wiki, &queue, None, 0) {
             Ok(result) => {
                 let elapsed = item_start.elapsed();
                 let status = if result.rejected > 0 {
@@ -108,7 +108,8 @@ const MAX_RECURSION_DEPTH: usize = 3;
 
 fn process_file(
     path: &Path,
-    config: &Config,
+    tools: &ToolsConfig,
+    wiki: &WikiConfig,
     queue: &Queue,
     parent_id: Option<i64>,
     depth: usize,
@@ -128,28 +129,18 @@ fn process_file(
         return Ok(result);
     }
 
-    match detect_file_type(path, config) {
-        FileClassification::Rejected(reason) => {
-            let id = queue
-                .enqueue(path, FileType::Unknown, parent_id)
-                .context("failed to enqueue rejected file")?;
-            queue
-                .mark_rejected(id, &reason)
-                .context("failed to mark item rejected")?;
-            result.rejected += 1;
-        }
-
+    match detect_file_type(path) {
         FileClassification::Ingestable(FileType::Zip) => {
             let id = queue
                 .enqueue(path, FileType::Zip, parent_id)
                 .context("failed to enqueue zip file")?;
             result.queued += 1;
 
-            let extract_dir = config.paths.raw_dir.join(format!("zip_{id}"));
+            let extract_dir = wiki.raw_dir().join(format!("zip_{id}"));
             match extract_zip(path, &extract_dir) {
                 Ok(extracted) => {
                     for child_path in &extracted {
-                        match process_file(child_path, config, queue, Some(id), depth + 1) {
+                        match process_file(child_path, tools, wiki, queue, Some(id), depth + 1) {
                             Ok(child_result) => result.merge(child_result),
                             Err(e) => {
                                 eprintln!(
@@ -184,10 +175,10 @@ fn process_file(
                 .context("failed to enqueue PDF file")?;
             result.queued += 1;
 
-            match classify_pdf(path, config) {
+            match classify_pdf(path) {
                 Ok(PdfClassification::Book { .. }) => {
-                    let chapter_dir = config.paths.raw_dir.join(format!("pdf_{id}_chapters"));
-                    match split_pdf_chapters(path, &chapter_dir, config) {
+                    let chapter_dir = wiki.raw_dir().join(format!("pdf_{id}_chapters"));
+                    match split_pdf_chapters(path, &chapter_dir, tools) {
                         Ok(chapters) => {
                             for chapter_path in &chapters {
                                 let chapter_id = queue
@@ -195,7 +186,7 @@ fn process_file(
                                     .context("failed to enqueue PDF chapter")?;
                                 result.queued += 1;
                                 if let Err(e) =
-                                    extract_and_store_text(chapter_path, chapter_id, config)
+                                    extract_and_store_text(chapter_path, chapter_id, tools, wiki)
                                 {
                                     eprintln!(
                                         "Failed to extract text for chapter {}: {e:#}",
@@ -227,7 +218,7 @@ fn process_file(
                 }
 
                 Ok(PdfClassification::Simple) => {
-                    if let Err(e) = extract_and_store_text(path, id, config) {
+                    if let Err(e) = extract_and_store_text(path, id, tools, wiki) {
                         eprintln!("Failed to extract text for {}: {e:#}", path.display());
                         queue
                             .mark_error(id, &format!("{e:#}"))
@@ -254,7 +245,7 @@ fn process_file(
                 .context("failed to enqueue markdown/text file")?;
             result.queued += 1;
 
-            let dest = config.paths.processed_text_path(id);
+            let dest = wiki.processed_text_path(id);
             if let Err(e) = copy_to_processed(path, &dest) {
                 eprintln!("Failed to copy {} to processed dir: {e:#}", path.display());
                 queue
@@ -271,7 +262,7 @@ fn process_file(
                 .context("failed to enqueue audio/video file")?;
             result.queued += 1;
 
-            if let Err(e) = transcribe_source(path, id, &file_type, config) {
+            if let Err(e) = transcribe_source(path, id, &file_type, tools, wiki) {
                 eprintln!("Failed to transcribe {}: {e:#}", path.display());
                 queue
                     .mark_error(id, &format!("{e:#}"))
@@ -297,15 +288,20 @@ fn process_file(
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-fn extract_and_store_text(path: &Path, item_id: i64, config: &Config) -> anyhow::Result<()> {
-    let text = extract_pdf_text(path, config)
+fn extract_and_store_text(
+    path: &Path,
+    item_id: i64,
+    tools: &ToolsConfig,
+    wiki: &WikiConfig,
+) -> anyhow::Result<()> {
+    let text = extract_pdf_text(path, tools)
         .with_context(|| format!("extract_pdf_text failed for {}", path.display()))?;
 
-    let dest = config.paths.processed_text_path(item_id);
-    fs::create_dir_all(&config.paths.processed_dir).with_context(|| {
+    let dest = wiki.processed_text_path(item_id);
+    fs::create_dir_all(wiki.processed_dir()).with_context(|| {
         format!(
             "failed to create processed dir: {}",
-            config.paths.processed_dir.display()
+            wiki.processed_dir().display()
         )
     })?;
     fs::write(&dest, text)
@@ -318,7 +314,8 @@ fn transcribe_source(
     path: &Path,
     item_id: i64,
     file_type: &FileType,
-    config: &Config,
+    tools: &ToolsConfig,
+    wiki: &WikiConfig,
 ) -> anyhow::Result<()> {
     let audio_path: PathBuf;
     let audio_ref: &Path;
@@ -326,8 +323,8 @@ fn transcribe_source(
     let mut cleanup_dir: Option<PathBuf> = None;
 
     if *file_type == FileType::Video {
-        let audio_dir = config.paths.raw_dir.join(format!("audio_{item_id}"));
-        let extracted = extract_audio(path, &audio_dir, config)
+        let audio_dir = wiki.raw_dir().join(format!("audio_{item_id}"));
+        let extracted = extract_audio(path, &audio_dir, tools)
             .with_context(|| format!("failed to extract audio from video {}", path.display()))?;
         audio_path = extracted;
         audio_ref = &audio_path;
@@ -336,14 +333,14 @@ fn transcribe_source(
         audio_ref = path;
     }
 
-    let transcript = transcribe_audio(audio_ref, config)
+    let transcript = transcribe_audio(audio_ref, tools)
         .with_context(|| format!("failed to transcribe {}", audio_ref.display()))?;
 
-    let dest = config.paths.processed_text_path(item_id);
-    fs::create_dir_all(&config.paths.processed_dir).with_context(|| {
+    let dest = wiki.processed_text_path(item_id);
+    fs::create_dir_all(wiki.processed_dir()).with_context(|| {
         format!(
             "failed to create processed dir: {}",
-            config.paths.processed_dir.display()
+            wiki.processed_dir().display()
         )
     })?;
     fs::write(&dest, transcript)

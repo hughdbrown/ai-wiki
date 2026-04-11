@@ -11,7 +11,7 @@ use ratatui::widgets::*;
 
 use anyhow::Context;
 
-use ai_wiki_core::config::Config;
+use ai_wiki_core::config::WikiConfig;
 use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 
 /// Upper bound for detail-view scrolling. Content length is computed at
@@ -20,9 +20,9 @@ use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 /// while preventing the user from scrolling into infinite blank space.
 const MAX_DETAIL_SCROLL: u16 = 500;
 
-pub fn run(config: &Config) -> anyhow::Result<()> {
-    let queue = Queue::open(&config.paths.database_path)
-        .with_context(|| format!("failed to open queue at {}", config.paths.database_path.display()))?;
+pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
+    let queue = Queue::open(&wiki.database_path())
+        .with_context(|| format!("failed to open queue at {}", wiki.database_path().display()))?;
 
     // Install panic hook to restore terminal on crash
     let original_hook = std::panic::take_hook();
@@ -38,7 +38,7 @@ pub fn run(config: &Config) -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, queue, config);
+    let result = run_app(&mut terminal, queue, wiki);
 
     // Restore terminal (normal exit path)
     disable_raw_mode()?;
@@ -60,7 +60,7 @@ enum View {
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     queue: Queue,
-    config: &Config,
+    wiki: &WikiConfig,
 ) -> anyhow::Result<()> {
     let mut table_state = TableState::default();
     let mut items: Vec<QueueItem> = vec![];
@@ -100,7 +100,7 @@ fn run_app<B: Backend>(
         let status_text = status_msg.as_ref().map(|(msg, _)| msg.as_str());
         terminal.draw(|f| match &view {
             View::Table => draw_table(f, &items, &counts, &mut table_state, status_text),
-            View::Detail(item) => draw_detail(f, item, config, detail_scroll),
+            View::Detail(item) => draw_detail(f, item, wiki, detail_scroll),
         })?;
 
         if event::poll(Duration::from_millis(250))?
@@ -316,7 +316,7 @@ fn draw_table(
 
 // ─── Detail View ─────────────────────────────────────────────────────────────
 
-fn draw_detail(f: &mut Frame, item: &QueueItem, config: &Config, scroll: u16) {
+fn draw_detail(f: &mut Frame, item: &QueueItem, wiki: &WikiConfig, scroll: u16) {
     let area = f.area();
 
     let status_color = match &item.status {
@@ -425,7 +425,7 @@ fn draw_detail(f: &mut Frame, item: &QueueItem, config: &Config, scroll: u16) {
 
             // Try to read the wiki page content
             if let Some(ref wiki_path) = item.wiki_page_path {
-                let full_path = config.paths.wiki_dir.join(wiki_path);
+                let full_path = wiki.wiki_dir().join(wiki_path);
                 match std::fs::read_to_string(&full_path) {
                     Ok(content) => {
                         for line in content.lines() {

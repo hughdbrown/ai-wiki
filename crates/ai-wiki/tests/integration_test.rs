@@ -7,72 +7,59 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use ai_wiki_core::config::{AppConfig, WikiConfig};
 use ai_wiki_core::queue::{ItemStatus, Queue};
 use ai_wiki_core::wiki::Wiki;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Creates a temp environment with config, raw, wiki, processed, and db paths.
-/// Returns (TempDir, config_path, raw_dir, wiki_dir, db_path).
+/// Creates a temp environment with AppConfig and WikiConfig pointing at a temp dir.
+/// Returns (TempDir, wiki_name, config_path, WikiConfig).
 /// The TempDir must be kept alive for the duration of the test.
-fn setup_test_env() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
+fn setup_test_env() -> (tempfile::TempDir, String, PathBuf, WikiConfig) {
     let tmp = tempfile::tempdir().expect("failed to create tempdir");
-    let raw_dir = tmp.path().join("raw");
-    let wiki_dir = tmp.path().join("wiki");
-    let processed_dir = tmp.path().join("processed");
-    let db_path = tmp.path().join("test.db");
+    let wiki_name = format!("test-{}", std::process::id());
     let config_path = tmp.path().join("config.toml");
 
-    fs::create_dir_all(&raw_dir).expect("failed to create raw_dir");
+    let wiki_config = WikiConfig {
+        name: wiki_name.clone(),
+        root: tmp.path().to_path_buf(),
+    };
 
-    // Use display() with forward slashes for TOML — on macOS/Linux this is fine.
-    let config = format!(
-        r#"[paths]
-raw_dir = "{raw}"
-wiki_dir = "{wiki}"
-database_path = "{db}"
-processed_dir = "{processed}"
+    // Create directory structure
+    fs::create_dir_all(wiki_config.raw_dir()).expect("failed to create raw_dir");
+    fs::create_dir_all(wiki_config.processed_dir()).expect("failed to create processed_dir");
+    fs::create_dir_all(wiki_config.wiki_dir()).expect("failed to create wiki_dir");
 
-[pdf]
-book_min_pages = 50
+    // Create an AppConfig with this wiki registered
+    let mut app_config = AppConfig::default();
+    app_config.register_wiki(wiki_name.clone(), tmp.path().to_path_buf());
+    app_config
+        .save_to(&config_path)
+        .expect("failed to write config.toml");
 
-[rejection]
-non_operative_extensions = [".dmg"]
-sensitive_filename_patterns = ["divorce", "court", "bank.statement", "tax.return", "report.card", "financial", "lease"]
+    // Create the database
+    let _queue =
+        Queue::open(&wiki_config.database_path()).expect("failed to create queue database");
 
-[tools]
-qpdf_path = "qpdf"
-pdftotext_path = "pdftotext"
-pdftoppm_path = "pdftoppm"
-tesseract_path = "tesseract"
-ffmpeg_path = "ffmpeg"
-whisper_cpp_path = "whisper-cpp"
-whisper_model_path = "models/ggml-large-v3.bin"
-"#,
-        raw = raw_dir.display(),
-        wiki = wiki_dir.display(),
-        db = db_path.display(),
-        processed = processed_dir.display(),
-    );
-
-    fs::write(&config_path, config).expect("failed to write config.toml");
-
-    (tmp, config_path, raw_dir, wiki_dir, db_path)
+    (tmp, wiki_name, config_path, wiki_config)
 }
 
-/// Run `cargo run -p ai-wiki -- --config <config> ingest <target>` and return the output.
-fn run_ingest(config_path: &Path, target: &str) -> Output {
+/// Run `cargo run -p ai-wiki -- --wiki <name> ingest <target>` with AI_WIKI_CONFIG pointing
+/// at the test config file.
+fn run_ingest(config_path: &Path, wiki_name: &str, target: &str) -> Output {
     Command::new("cargo")
         .args([
             "run",
             "-p",
             "ai-wiki",
             "--",
-            "--config",
-            config_path.to_str().expect("config path is not UTF-8"),
+            "--wiki",
+            wiki_name,
             "ingest",
             target,
         ])
+        .env("AI_WIKI_CONFIG", config_path.to_str().unwrap())
         .output()
         .expect("failed to run `cargo run -p ai-wiki`")
 }
@@ -81,7 +68,8 @@ fn run_ingest(config_path: &Path, target: &str) -> Output {
 
 #[test]
 fn test_ingest_markdown_files_end_to_end() {
-    let (_tmp, config_path, raw_dir, wiki_dir, db_path) = setup_test_env();
+    let (_tmp, wiki_name, config_path, wiki_config) = setup_test_env();
+    let raw_dir = wiki_config.raw_dir();
 
     // Create 3 markdown files in raw_dir.
     let files = ["alpha.md", "beta.md", "gamma.md"];
@@ -94,7 +82,7 @@ fn test_ingest_markdown_files_end_to_end() {
     }
 
     // Run ingest on the raw directory.
-    let output = run_ingest(&config_path, raw_dir.to_str().unwrap());
+    let output = run_ingest(&config_path, &wiki_name, raw_dir.to_str().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -109,7 +97,7 @@ fn test_ingest_markdown_files_end_to_end() {
     );
 
     // Open the queue and verify 3 items are present with status Queued.
-    let queue = Queue::open(&db_path).expect("failed to open queue db");
+    let queue = Queue::open(&wiki_config.database_path()).expect("failed to open queue db");
     let queued = queue
         .list_items(Some(&ItemStatus::Queued))
         .expect("failed to list queued items");
@@ -122,11 +110,7 @@ fn test_ingest_markdown_files_end_to_end() {
 
     // Verify processed/{id}.txt files exist and have correct content.
     for item in &queued {
-        let processed_path = config_path
-            .parent()
-            .unwrap()
-            .join("processed")
-            .join(format!("{}.txt", item.id));
+        let processed_path = wiki_config.processed_text_path(item.id);
         assert!(
             processed_path.exists(),
             "expected processed file {} to exist",
@@ -146,6 +130,7 @@ fn test_ingest_markdown_files_end_to_end() {
 
     // Verify the wiki directory was NOT auto-initialized by ingest (it doesn't do that),
     // but initialize it ourselves and verify the structure.
+    let wiki_dir = wiki_config.wiki_dir();
     let wiki = Wiki::new(wiki_dir.clone());
     wiki.init().expect("failed to init wiki");
     assert!(wiki_dir.join("entities").is_dir(), "missing entities/");
@@ -157,17 +142,18 @@ fn test_ingest_markdown_files_end_to_end() {
     assert!(wiki_dir.join("CLAUDE.md").is_file(), "missing CLAUDE.md");
 }
 
-// ─── Test 2: ingest rejects .dmg files ────────────────────────────────────────
+// ─── Test 2: ingest unknown files ────────────────────────────────────────────
 
 #[test]
-fn test_ingest_rejects_dmg_files() {
-    let (_tmp, config_path, raw_dir, _wiki_dir, db_path) = setup_test_env();
+fn test_ingest_rejects_unknown_files() {
+    let (_tmp, wiki_name, config_path, wiki_config) = setup_test_env();
+    let raw_dir = wiki_config.raw_dir();
 
-    // Create one valid markdown file and one .dmg file.
+    // Create one valid markdown file and one unknown-extension file.
     fs::write(raw_dir.join("notes.md"), "# Notes\n\nSome notes.").unwrap();
     fs::write(raw_dir.join("installer.dmg"), b"\x00\x01\x02dmg content").unwrap();
 
-    let output = run_ingest(&config_path, raw_dir.to_str().unwrap());
+    let output = run_ingest(&config_path, &wiki_name, raw_dir.to_str().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -175,7 +161,7 @@ fn test_ingest_rejects_dmg_files() {
         "ingest failed.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
-    // Summary should report 1 queued, 1 rejected.
+    // Summary should report 1 queued, 1 rejected (unknown file type).
     assert!(
         stdout.contains("queued: 1"),
         "expected 'queued: 1' in stdout, got:\n{stdout}"
@@ -186,7 +172,7 @@ fn test_ingest_rejects_dmg_files() {
     );
 
     // Open the queue and verify counts.
-    let queue = Queue::open(&db_path).expect("failed to open queue db");
+    let queue = Queue::open(&wiki_config.database_path()).expect("failed to open queue db");
 
     let queued = queue
         .list_items(Some(&ItemStatus::Queued))
@@ -198,10 +184,10 @@ fn test_ingest_rejects_dmg_files() {
         .expect("list rejected");
     assert_eq!(rejected.len(), 1, "expected 1 rejected item");
 
-    // Verify the rejection reason mentions the extension.
+    // Verify the rejection reason mentions unknown file type.
     let reason = rejected[0].error_message.as_deref().unwrap_or("");
     assert!(
-        reason.contains(".dmg") || reason.contains("non-operative"),
+        reason.contains("unknown"),
         "unexpected rejection reason: {reason}"
     );
 }
@@ -210,14 +196,15 @@ fn test_ingest_rejects_dmg_files() {
 
 #[test]
 fn test_ingest_dedup_prevents_double_processing() {
-    let (_tmp, config_path, raw_dir, _wiki_dir, db_path) = setup_test_env();
+    let (_tmp, wiki_name, config_path, wiki_config) = setup_test_env();
+    let raw_dir = wiki_config.raw_dir();
 
     // Create 2 markdown files.
     fs::write(raw_dir.join("doc1.md"), "# Doc 1").unwrap();
     fs::write(raw_dir.join("doc2.md"), "# Doc 2").unwrap();
 
     // First ingest — should queue 2.
-    let output1 = run_ingest(&config_path, raw_dir.to_str().unwrap());
+    let output1 = run_ingest(&config_path, &wiki_name, raw_dir.to_str().unwrap());
     let stdout1 = String::from_utf8_lossy(&output1.stdout);
     let stderr1 = String::from_utf8_lossy(&output1.stderr);
     assert!(
@@ -230,7 +217,7 @@ fn test_ingest_dedup_prevents_double_processing() {
     );
 
     // Second ingest on the same directory — should skip both files.
-    let output2 = run_ingest(&config_path, raw_dir.to_str().unwrap());
+    let output2 = run_ingest(&config_path, &wiki_name, raw_dir.to_str().unwrap());
     let stdout2 = String::from_utf8_lossy(&output2.stdout);
     let stderr2 = String::from_utf8_lossy(&output2.stderr);
     assert!(
@@ -251,7 +238,7 @@ fn test_ingest_dedup_prevents_double_processing() {
     );
 
     // Total queue should still be 2 — no duplicates added.
-    let queue = Queue::open(&db_path).expect("failed to open queue db");
+    let queue = Queue::open(&wiki_config.database_path()).expect("failed to open queue db");
     let all_items = queue.list_items(None).expect("list all items");
     assert_eq!(
         all_items.len(),
@@ -265,7 +252,8 @@ fn test_ingest_dedup_prevents_double_processing() {
 
 #[test]
 fn test_ingest_file_list() {
-    let (_tmp, config_path, raw_dir, _wiki_dir, db_path) = setup_test_env();
+    let (_tmp, wiki_name, config_path, wiki_config) = setup_test_env();
+    let raw_dir = wiki_config.raw_dir();
 
     // Create 2 files.
     let file_a = raw_dir.join("list_a.md");
@@ -274,7 +262,7 @@ fn test_ingest_file_list() {
     fs::write(&file_b, "# File B\n\nContent B.").unwrap();
 
     // Write a file list referencing both.
-    let list_file = config_path.parent().unwrap().join("files.txt");
+    let list_file = wiki_config.root.join("files.txt");
     fs::write(
         &list_file,
         format!(
@@ -287,7 +275,7 @@ fn test_ingest_file_list() {
 
     // Run ingest with @list_file syntax.
     let at_arg = format!("@{}", list_file.display());
-    let output = run_ingest(&config_path, &at_arg);
+    let output = run_ingest(&config_path, &wiki_name, &at_arg);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -301,7 +289,7 @@ fn test_ingest_file_list() {
     );
 
     // Verify 2 items were queued.
-    let queue = Queue::open(&db_path).expect("failed to open queue db");
+    let queue = Queue::open(&wiki_config.database_path()).expect("failed to open queue db");
     let queued = queue
         .list_items(Some(&ItemStatus::Queued))
         .expect("list queued");
@@ -312,15 +300,15 @@ fn test_ingest_file_list() {
 
 #[test]
 fn test_queue_to_wiki_workflow() {
-    let (_tmp, config_path, raw_dir, wiki_dir, db_path) = setup_test_env();
-    let processed_dir = config_path.parent().unwrap().join("processed");
+    let (_tmp, wiki_name, config_path, wiki_config) = setup_test_env();
+    let raw_dir = wiki_config.raw_dir();
 
     // Create and ingest a markdown file.
     let source_content = "# Rust\n\nRust is a systems programming language focused on safety.";
     let source_file = raw_dir.join("rust.md");
     fs::write(&source_file, source_content).unwrap();
 
-    let output = run_ingest(&config_path, source_file.to_str().unwrap());
+    let output = run_ingest(&config_path, &wiki_name, source_file.to_str().unwrap());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -329,7 +317,7 @@ fn test_queue_to_wiki_workflow() {
     );
 
     // Open queue and claim the next item.
-    let queue = Queue::open(&db_path).expect("failed to open queue db");
+    let queue = Queue::open(&wiki_config.database_path()).expect("failed to open queue db");
     let item = queue
         .claim_next_queued()
         .expect("claim_next_queued failed")
@@ -347,7 +335,7 @@ fn test_queue_to_wiki_workflow() {
     );
 
     // Read the preprocessed text from processed/{id}.txt.
-    let processed_path = processed_dir.join(format!("{}.txt", item.id));
+    let processed_path = wiki_config.processed_text_path(item.id);
     assert!(
         processed_path.exists(),
         "processed file {} should exist",
@@ -360,6 +348,7 @@ fn test_queue_to_wiki_workflow() {
     );
 
     // Initialize wiki and write a page.
+    let wiki_dir = wiki_config.wiki_dir();
     let wiki = Wiki::new(wiki_dir.clone());
     wiki.init().expect("wiki init failed");
 

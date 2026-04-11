@@ -81,7 +81,11 @@ impl Default for AppConfig {
 
 impl AppConfig {
     /// Returns the path to the global config file: ~/.ai-wiki/config.toml
+    /// Can be overridden with the `AI_WIKI_CONFIG` environment variable (useful for tests).
     pub fn config_path() -> PathBuf {
+        if let Ok(path) = std::env::var("AI_WIKI_CONFIG") {
+            return PathBuf::from(path);
+        }
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".ai-wiki")

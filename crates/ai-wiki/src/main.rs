@@ -3,7 +3,9 @@ mod process;
 mod tui;
 
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use ai_wiki_core::config::{AppConfig, WikiConfig};
 
 #[derive(Parser)]
 #[command(
@@ -19,9 +21,9 @@ use std::path::{Path, PathBuf};
                   See 'ai-wiki help <command>' for details on each command."
 )]
 struct Cli {
-    /// Path to config file [created with defaults if missing]
-    #[arg(long, default_value = "ai-wiki.toml")]
-    config: PathBuf,
+    /// Name of the wiki to operate on (overrides CWD detection)
+    #[arg(long)]
+    wiki: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -29,12 +31,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a new ai-wiki project in the current directory
+    /// Initialize a new wiki and register it in the global config
     #[command(
-        long_about = "Creates the directory structure and config file needed to run ai-wiki.\n\
-                      Run this once in an empty directory to set up a new wiki project.\n\n\
+        long_about = "Creates the directory structure for a new wiki and registers it in\n\
+                      ~/.ai-wiki/config.toml. If no directory is given, uses the current directory.\n\
+                      If no name is given, uses the directory's basename.\n\n\
                       Creates:\n  \
-                      - ai-wiki.toml     — configuration file with absolute paths\n  \
                       - wiki/            — Obsidian vault (entities/, concepts/, claims/, sources/)\n  \
                       - wiki/index.md    — page catalog\n  \
                       - wiki/log.md      — ingestion log\n  \
@@ -46,7 +48,17 @@ enum Commands {
                       ai-wiki ingest ~/Downloads/*.pdf\n  \
                       ai-wiki process"
     )]
-    Init,
+    Init {
+        /// Name for this wiki (defaults to directory basename)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Directory to initialize (defaults to current directory)
+        directory: Option<PathBuf>,
+    },
+
+    /// List all registered wikis
+    List,
 
     /// Ingest source files into the processing queue
     #[command(
@@ -57,8 +69,7 @@ enum Commands {
                         outlines and 50+ pages) are split into chapters automatically.\n  \
                       - Markdown/Text: copied directly to the processed directory.\n  \
                       - ZIP: extracted and each contained file processed recursively.\n  \
-                      - Audio/Video: audio extracted with ffmpeg, transcribed with whisper-cpp.\n  \
-                      - .dmg and other non-operative types: rejected immediately.\n\n\
+                      - Audio/Video: audio extracted with ffmpeg, transcribed with whisper-cpp.\n\n\
                       Duplicate files are detected and skipped automatically.\n\n\
                       Examples:\n  \
                       ai-wiki ingest ~/Downloads/paper.pdf\n  \
@@ -151,34 +162,29 @@ enum QueueCommands {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Init runs before config loading — it creates the config
-    if matches!(cli.command, Commands::Init) {
-        return init(&cli.config);
-    }
-
-    let config = if cli.config.exists() {
-        ai_wiki_core::config::Config::load(&cli.config)?
-    } else {
-        let config = ai_wiki_core::config::Config::default();
-        config.save(&cli.config)?;
-        eprintln!("Created default config at {}", cli.config.display());
-        config
-    };
-    config.validate()?;
-
     match cli.command {
-        Commands::Init => unreachable!(),
-        Commands::Ingest { path } => ingest::run(&config, &path),
-        Commands::Tui => tui::run(&config),
-        Commands::Process => process::run(&config, &cli.config),
-        Commands::Retry => retry(&config, &cli.config),
-        Commands::Clear => clear(&config),
-        Commands::Queue(cmd) => queue_cmd(&config, cmd),
+        Commands::Init { name, directory } => init(name, directory),
+        Commands::List => list(),
+        _ => {
+            let app_config = AppConfig::load()?;
+            app_config.validate_tools()?;
+            let wiki = app_config.resolve_wiki_auto(cli.wiki.as_deref())?;
+
+            match cli.command {
+                Commands::Ingest { path } => ingest::run(&app_config.tools, &wiki, &path),
+                Commands::Tui => tui::run(&wiki),
+                Commands::Process => process::run(&app_config.tools, &wiki),
+                Commands::Retry => retry(&app_config, &wiki),
+                Commands::Clear => clear(&wiki),
+                Commands::Queue(cmd) => queue_cmd(&wiki, cmd),
+                Commands::Init { .. } | Commands::List => unreachable!(),
+            }
+        }
     }
 }
 
-fn retry(config: &ai_wiki_core::config::Config, config_path: &Path) -> anyhow::Result<()> {
-    let queue = ai_wiki_core::queue::Queue::open(&config.paths.database_path)?;
+fn retry(app_config: &AppConfig, wiki: &WikiConfig) -> anyhow::Result<()> {
+    let queue = ai_wiki_core::queue::Queue::open(&wiki.database_path())?;
 
     let error_items = queue.list_items(Some(&ai_wiki_core::queue::ItemStatus::Error))?;
     if error_items.is_empty() {
@@ -188,13 +194,11 @@ fn retry(config: &ai_wiki_core::config::Config, config_path: &Path) -> anyhow::R
 
     let retryable_ids: Vec<i64> = error_items
         .iter()
-        .filter(|item| config.paths.processed_text_path(item.id).exists())
+        .filter(|item| wiki.processed_text_path(item.id).exists())
         .map(|item| item.id)
         .collect();
 
     let retried = queue.requeue_items(&retryable_ids)?;
-    // `retried` may be less than `retryable_ids.len()` if items changed status
-    // between the list query and the requeue call; the difference is benign.
     let skipped = error_items.len().saturating_sub(retried);
 
     println!("Retry: {retried} item(s) requeued, {skipped} skipped (no processed text or already changed).");
@@ -202,14 +206,14 @@ fn retry(config: &ai_wiki_core::config::Config, config_path: &Path) -> anyhow::R
     if retried > 0 {
         println!("Running process to build wiki pages...");
         println!();
-        process::run(config, config_path)?;
+        process::run(&app_config.tools, wiki)?;
     }
 
     Ok(())
 }
 
-fn clear(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
-    let queue = ai_wiki_core::queue::Queue::open(&config.paths.database_path)?;
+fn clear(wiki: &WikiConfig) -> anyhow::Result<()> {
+    let queue = ai_wiki_core::queue::Queue::open(&wiki.database_path())?;
 
     let error_items = queue.list_items(Some(&ai_wiki_core::queue::ItemStatus::Error))?;
     if error_items.is_empty() {
@@ -217,7 +221,6 @@ fn clear(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Delete error items from the database
     let (errors, children) = queue.delete_errors()?;
 
     let total = errors + children;
@@ -232,36 +235,49 @@ fn clear(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init(config_path: &Path) -> anyhow::Result<()> {
-    use ai_wiki_core::config::Config;
-    use ai_wiki_core::queue::Queue;
-    use ai_wiki_core::wiki::Wiki;
+fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> {
+    let dir = directory.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let wiki_name = name.unwrap_or_else(|| {
+        dir.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("wiki")
+            .to_string()
+    });
 
-    let cwd = std::env::current_dir()?;
+    // Load or create app config
+    let mut app_config = AppConfig::load().unwrap_or_else(|_| AppConfig::default());
 
-    if config_path.exists() {
-        anyhow::bail!(
-            "Config file already exists: {}\nThis directory appears to be already initialized.",
-            config_path.display()
-        );
+    if app_config.wikis.contains_key(&wiki_name) {
+        anyhow::bail!("Wiki '{}' already registered", wiki_name);
     }
 
-    // Build config with absolute paths rooted in the current directory
-    let mut config = Config::default();
-    config.paths.raw_dir = cwd.join("raw");
-    config.paths.wiki_dir = cwd.join("wiki");
-    config.paths.database_path = cwd.join("ai-wiki.db");
-    config.paths.processed_dir = cwd.join("processed");
+    // Create directory structure
+    let wiki_config = WikiConfig {
+        name: wiki_name.clone(),
+        root: dir.clone(),
+    };
+    std::fs::create_dir_all(wiki_config.wiki_dir())?;
+    std::fs::create_dir_all(wiki_config.processed_dir())?;
+    std::fs::create_dir_all(wiki_config.raw_dir())?;
 
-    // Create directories
-    std::fs::create_dir_all(&config.paths.raw_dir)?;
-    std::fs::create_dir_all(&config.paths.processed_dir)?;
-    println!("Created raw/");
-    println!("Created processed/");
-
-    // Initialize the wiki (creates entities/, concepts/, claims/, sources/, index.md, log.md, CLAUDE.md)
-    let wiki = Wiki::new(config.paths.wiki_dir.clone());
+    // Init wiki vault
+    let wiki = ai_wiki_core::wiki::Wiki::new(wiki_config.wiki_dir());
     wiki.init()?;
+
+    // Create database
+    let _queue = ai_wiki_core::queue::Queue::open(&wiki_config.database_path())?;
+
+    // Register in config
+    app_config.register_wiki(wiki_name.clone(), dir);
+    app_config.save()?;
+
+    // Print results
+    println!(
+        "Initialized wiki '{}' at {}",
+        wiki_name,
+        wiki_config.root.display()
+    );
     println!("Created wiki/");
     println!("  wiki/entities/");
     println!("  wiki/concepts/");
@@ -270,17 +286,15 @@ fn init(config_path: &Path) -> anyhow::Result<()> {
     println!("  wiki/index.md");
     println!("  wiki/log.md");
     println!("  wiki/CLAUDE.md");
-
-    // Create the SQLite database (creates tables and indexes)
-    let _queue = Queue::open(&config.paths.database_path)?;
+    println!("Created processed/");
+    println!("Created raw/");
     println!("Created ai-wiki.db");
 
-    // Save the config file
-    config.save(config_path)?;
-    println!("Created {}", config_path.display());
-
     println!();
-    println!("Initialized ai-wiki project in {}", cwd.display());
+    println!(
+        "Initialized ai-wiki project in {}",
+        wiki_config.root.display()
+    );
     println!();
     println!("Next steps:");
     println!("  ai-wiki ingest ~/Downloads/*.pdf   # queue files for processing");
@@ -290,8 +304,20 @@ fn init(config_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn queue_cmd(config: &ai_wiki_core::config::Config, cmd: QueueCommands) -> anyhow::Result<()> {
-    let queue = ai_wiki_core::queue::Queue::open(&config.paths.database_path)?;
+fn list() -> anyhow::Result<()> {
+    let app_config = AppConfig::load()?;
+    if app_config.wikis.is_empty() {
+        println!("No wikis registered. Run 'ai-wiki init' to create one.");
+        return Ok(());
+    }
+    for (name, entry) in &app_config.wikis {
+        println!("  {} — {}", name, entry.root.display());
+    }
+    Ok(())
+}
+
+fn queue_cmd(wiki: &WikiConfig, cmd: QueueCommands) -> anyhow::Result<()> {
+    let queue = ai_wiki_core::queue::Queue::open(&wiki.database_path())?;
 
     match cmd {
         QueueCommands::Claim => {
