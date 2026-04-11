@@ -146,7 +146,8 @@ pub fn split_pdf_chapters(
                 .arg(".")
                 .arg(format!("{start}-{end}"))
                 .arg("--")
-                .arg(&output_path),
+                .arg(&output_path)
+                .stderr(std::process::Stdio::null()),
             "qpdf",
         )?;
 
