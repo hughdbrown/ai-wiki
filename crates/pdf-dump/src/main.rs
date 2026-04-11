@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process;
 
 use anyhow::Context;
 use lopdf::Document;
@@ -6,7 +7,8 @@ use lopdf::Document;
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        anyhow::bail!("Usage: pdf-dump <file.pdf>");
+        eprintln!("Usage: pdf-dump <file.pdf>");
+        process::exit(1);
     }
 
     let path = Path::new(&args[1]);

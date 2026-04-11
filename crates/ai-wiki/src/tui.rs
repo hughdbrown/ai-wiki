@@ -14,6 +14,10 @@ use anyhow::Context;
 use ai_wiki_core::config::Config;
 use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 
+/// Upper bound on detail-view scroll offset. Prevents unbounded scrolling
+/// when exact content length is not tracked. 500 lines covers typical detail views.
+const MAX_DETAIL_SCROLL: u16 = 500;
+
 pub fn run(config: &Config) -> anyhow::Result<()> {
     let queue = Queue::open(&config.paths.database_path)
         .with_context(|| format!("failed to open queue at {}", config.paths.database_path.display()))?;
@@ -195,7 +199,7 @@ fn run_app<B: Backend>(
                         detail_scroll = detail_scroll.saturating_sub(1);
                     }
                     KeyCode::Down => {
-                        detail_scroll = detail_scroll.saturating_add(1).min(500);
+                        detail_scroll = detail_scroll.saturating_add(1).min(MAX_DETAIL_SCROLL);
                     }
                     _ => {}
                 },
