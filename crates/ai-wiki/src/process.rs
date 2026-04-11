@@ -83,7 +83,7 @@ pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
             queue
                 .mark_error(item.id, &format!("Unsafe filename: {e:#}"))
                 .context("failed to mark item error")?;
-            eprintln!("[{processed}] {file_name} ... error (unsafe filename)");
+            eprintln!("[{processed}] {file_name:?} ... error (unsafe filename)");
             errors += 1;
             continue;
         }
@@ -91,8 +91,17 @@ pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
         eprint!("[{processed}] {file_name} ... ");
 
         // Collect processed text paths for this item
-        let text_paths = gather_text_paths(&item, &queue, wiki)
-            .with_context(|| format!("gathering text paths for item {}", item.id))?;
+        let text_paths = match gather_text_paths(&item, &queue, wiki) {
+            Ok(paths) => paths,
+            Err(e) => {
+                queue
+                    .mark_error(item.id, &format!("Failed to gather text paths: {e:#}"))
+                    .context("failed to mark item error")?;
+                eprintln!("error (gather text paths): {e:#}");
+                errors += 1;
+                continue;
+            }
+        };
         if text_paths.is_empty() {
             queue
                 .mark_error(item.id, "No processed text available")
@@ -102,7 +111,7 @@ pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
             continue;
         }
 
-        let prompt = build_item_prompt(wiki, &item, &text_paths);
+        let prompt = build_item_prompt(wiki, &item, &text_paths, &file_name);
 
         let item_start = std::time::Instant::now();
         match run_claude_session(&prompt, opts) {
@@ -228,17 +237,11 @@ fn run_claude_session(prompt: &str, opts: &ProcessOptions) -> anyhow::Result<()>
     Ok(())
 }
 
-fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, text_paths: &[(i64, String)]) -> String {
+fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, text_paths: &[(i64, String)], file_name: &str) -> String {
     let wiki_dir = wiki.wiki_dir().display().to_string();
     let wiki_name = &wiki.name;
     let today = chrono::Utc::now().format("%Y-%m-%d");
     let item_id = item.id;
-
-    let file_name = item
-        .file_path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| item.file_path.to_string_lossy().into_owned());
 
     let is_book = text_paths.len() > 1
         || (item.parent_id.is_none() && text_paths.iter().any(|(id, _)| *id != item.id));
@@ -401,7 +404,7 @@ mod tests {
             completed_at: None,
         };
         let text_paths = vec![(42, "/tmp/test-wiki/processed/42.txt".to_string())];
-        let prompt = build_item_prompt(&wiki, &item, &text_paths);
+        let prompt = build_item_prompt(&wiki, &item, &text_paths, "source.pdf");
 
         assert!(prompt.contains("Item ID:** 42"));
         assert!(prompt.contains("source.pdf"));
@@ -437,7 +440,7 @@ mod tests {
             (11, "/tmp/test-wiki/processed/11.txt".to_string()),
             (12, "/tmp/test-wiki/processed/12.txt".to_string()),
         ];
-        let prompt = build_item_prompt(&wiki, &item, &text_paths);
+        let prompt = build_item_prompt(&wiki, &item, &text_paths, "book.pdf");
 
         assert!(prompt.contains("queue complete 10"));
         assert!(prompt.contains("queue complete 11"));
