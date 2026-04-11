@@ -238,11 +238,11 @@ fn retry(wiki: &WikiConfig, process_cfg: &ai_wiki_core::config::ProcessConfig) -
                 "No auth method specified.\n\
                  Set [process].auth in ~/.ai-wiki/config.toml (\"pro\" or \"api\")."
             ))?;
-            let opts = process::ProcessOptions {
-                use_api_key: auth == "api",
-                model: process_cfg.model.clone(),
-            };
-            process::run(wiki, &opts)?;
+        let opts = process::ProcessOptions {
+            use_api_key: auth == "api",
+            model: process_cfg.model.clone(),
+        };
+        process::run(wiki, &opts)?;
     }
 
     Ok(())
