@@ -12,10 +12,23 @@ pub enum PdfClassification {
     Book { chapter_count: usize },
 }
 
+/// Run a closure with panics caught and the default panic hook suppressed.
+/// This prevents `catch_unwind` from spamming stderr with panic backtraces
+/// from buggy third-party PDF crates.
+fn catch_unwind_silent<F, R>(f: F) -> Result<R, ()>
+where
+    F: FnOnce() -> R + std::panic::UnwindSafe,
+{
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(f).map_err(|_| ());
+    std::panic::set_hook(prev_hook);
+    result
+}
+
 pub fn classify_pdf(path: &Path) -> anyhow::Result<PdfClassification> {
-    // Wrapped in catch_unwind because lopdf/pdf-extract can panic on malformed PDFs.
     let path_owned = path.to_path_buf();
-    let result = std::panic::catch_unwind(|| -> anyhow::Result<PdfClassification> {
+    let result = catch_unwind_silent(|| -> anyhow::Result<PdfClassification> {
         let doc = Document::load(&path_owned)
             .with_context(|| format!("failed to load PDF: {}", path_owned.display()))?;
 
@@ -37,7 +50,7 @@ pub fn classify_pdf(path: &Path) -> anyhow::Result<PdfClassification> {
 
     match result {
         Ok(inner) => inner,
-        Err(_) => Err(anyhow::anyhow!(
+        Err(()) => Err(anyhow::anyhow!(
             "PDF parser panicked while classifying {}",
             path.display()
         )),
@@ -49,10 +62,9 @@ pub fn split_pdf_chapters(
     output_dir: &Path,
     tools: &ToolsConfig,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    // Extract TOC info inside catch_unwind since lopdf can panic on malformed PDFs.
     let (total_pages, page_starts) = {
         let path_owned = path.to_path_buf();
-        let result = std::panic::catch_unwind(|| -> anyhow::Result<(u32, Vec<u32>)> {
+        let result = catch_unwind_silent(|| -> anyhow::Result<(u32, Vec<u32>)> {
             let doc = Document::load(&path_owned).with_context(|| {
                 format!("failed to load PDF: {}", path_owned.display())
             })?;
@@ -123,7 +135,9 @@ pub fn split_pdf_chapters(
             "qpdf",
         )?;
 
-        if !status.success() {
+        // qpdf exit codes: 0 = success, 3 = warnings (file still produced OK), 2 = errors
+        let exit_code = status.code().unwrap_or(1);
+        if exit_code != 0 && exit_code != 3 {
             return Err(anyhow::anyhow!(
                 "qpdf failed for chapter {} (pages {}-{})",
                 i + 1,
@@ -143,7 +157,7 @@ pub fn extract_pdf_text(path: &Path, tools: &ToolsConfig) -> anyhow::Result<Stri
     // on malformed PDFs (e.g., cff-parser-0.1.0/src/encoding.rs:150).
     let pdf_extract_result = {
         let path_owned = path.to_path_buf();
-        std::panic::catch_unwind(|| pdf_extract::extract_text(&path_owned))
+        catch_unwind_silent(|| pdf_extract::extract_text(&path_owned))
     };
     match pdf_extract_result {
         Ok(Ok(text)) if !text.trim().is_empty() => return Ok(text),
