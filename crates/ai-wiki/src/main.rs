@@ -3,7 +3,7 @@ mod process;
 mod tui;
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ai_wiki_core::config::{AppConfig, WikiConfig};
 
@@ -238,6 +238,10 @@ fn clear(wiki: &WikiConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Creates the wiki directory structure and initializes the database.
+///
+/// Does **not** clean up on failure — the caller is responsible for removing
+/// any partially-created directories if this function returns an error.
 fn init_wiki_dirs(wiki_config: &WikiConfig) -> anyhow::Result<()> {
     std::fs::create_dir_all(wiki_config.wiki_dir())?;
     std::fs::create_dir_all(wiki_config.processed_dir())?;
@@ -271,9 +275,15 @@ fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> 
         anyhow::bail!("Wiki '{}' already registered", wiki_name);
     }
 
-    // Resolve whisper_model_path to absolute if it is relative
+    // Resolve whisper_model_path to absolute relative to the config file's directory
+    // (e.g. ~/.ai-wiki/), not the wiki root — the model is a global tool resource.
     if app_config.tools.whisper_model_path.is_relative() {
-        app_config.tools.whisper_model_path = dir.join(&app_config.tools.whisper_model_path);
+        let config_dir = AppConfig::config_path()?
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        app_config.tools.whisper_model_path =
+            config_dir.join(&app_config.tools.whisper_model_path);
     }
 
     // Create directory structure
@@ -282,14 +292,29 @@ fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> 
         root: dir.clone(),
     };
 
+    // Record which paths do NOT already exist so we only clean up what we create.
+    let paths_to_check: Vec<PathBuf> = vec![
+        wiki_config.wiki_dir(),
+        wiki_config.processed_dir(),
+        wiki_config.raw_dir(),
+    ];
+    let created_dirs: Vec<PathBuf> = paths_to_check
+        .into_iter()
+        .filter(|p| !p.exists())
+        .collect();
+    let db_existed = wiki_config.database_path().exists();
+
     if let Err(e) = init_wiki_dirs(&wiki_config) {
-        // Clean up partially-created directories on failure
-        let _ = std::fs::remove_dir_all(wiki_config.wiki_dir());
-        let _ = std::fs::remove_dir_all(wiki_config.processed_dir());
-        let _ = std::fs::remove_dir_all(wiki_config.raw_dir());
-        let _ = std::fs::remove_file(wiki_config.database_path());
+        // Only remove directories and files that were freshly created by this init call,
+        // leaving pre-existing user directories intact.
+        for dir in &created_dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        if !db_existed {
+            let _ = std::fs::remove_file(wiki_config.database_path());
+        }
         return Err(e.context(format!(
-            "init failed; any partially-created directories under {} have been cleaned up",
+            "init failed; partially-created items under {} have been cleaned up",
             wiki_config.root.display()
         )));
     }
