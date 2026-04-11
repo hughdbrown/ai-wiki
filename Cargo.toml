@@ -29,6 +29,7 @@ tokio = { version = "1.51", features = ["full"] }
 toml = "0.8"
 zip = "2"
 
+# Do not set panic = "abort" — catch_unwind in pdf.rs requires unwinding
 [profile.release]
 codegen-units = 1
 debug = false
