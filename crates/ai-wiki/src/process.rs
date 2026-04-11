@@ -174,6 +174,7 @@ fn gather_text_paths(item: &QueueItem, queue: &Queue, wiki: &WikiConfig) -> Vec<
 fn run_claude_session(prompt: &str) -> anyhow::Result<()> {
     let mut child = Command::new("claude")
         .arg("--print")
+        .arg("--verbose")
         .arg("--dangerously-skip-permissions")
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
