@@ -36,19 +36,20 @@ pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
         )
     })?;
 
-    let counts = queue.count_by_status()?;
-    let queued_count: u64 = counts
+    // Count only top-level queued items (parent_id IS NULL).
+    // Children are processed as part of their parent's session.
+    let queued_parents = queue
+        .list_items(Some(&ai_wiki_core::queue::ItemStatus::Queued))?
         .iter()
-        .find(|(name, _)| name == "queued")
-        .map(|(_, n)| *n)
-        .unwrap_or(0);
+        .filter(|item| item.parent_id.is_none())
+        .count();
 
-    if queued_count == 0 {
+    if queued_parents == 0 {
         println!("No queued items to process.");
         return Ok(());
     }
 
-    let total = queued_count as usize;
+    let total = queued_parents;
     println!("Queue has {total} item(s). Processing one item per session.");
 
     eprintln!("WARNING: This will grant the Claude CLI permission to run commands on your system.");
@@ -60,8 +61,8 @@ pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
     let mut errors = 0usize;
 
     loop {
-        // Claim the next item from Rust, not from inside Claude
-        let item = match queue.claim_next_queued()? {
+        // Claim the next top-level item (skip children, they're handled via their parent)
+        let item = match claim_next_parent(&queue)? {
             Some(item) => item,
             None => break,
         };
@@ -134,6 +135,20 @@ pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// Claim the next queued item that has no parent (top-level item).
+/// Children are processed as part of their parent's session.
+fn claim_next_parent(queue: &Queue) -> anyhow::Result<Option<QueueItem>> {
+    // Get all queued items sorted by creation time
+    let queued = queue.list_items(Some(&ItemStatus::Queued))?;
+    for item in queued {
+        if item.parent_id.is_none() {
+            queue.mark_in_progress(item.id)?;
+            return Ok(Some(item));
+        }
+    }
+    Ok(None)
 }
 
 /// Gather the processed text file paths for an item.
