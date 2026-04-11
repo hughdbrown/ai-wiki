@@ -65,7 +65,9 @@ pub fn run(tools: &ToolsConfig, wiki: &WikiConfig, path_str: &str) -> anyhow::Re
         match process_file(file, tools, wiki, &queue, None, 0) {
             Ok(result) => {
                 let elapsed = item_start.elapsed();
-                let status = if result.queued > 0 && result.rejected > 0 {
+                let status = if result.queued > 0 && result.errors > 0 {
+                    "queued (some chapters errored)"
+                } else if result.queued > 0 && result.rejected > 0 {
                     "queued (some chapters rejected)"
                 } else if result.queued > 0 {
                     "queued"
@@ -190,6 +192,7 @@ fn process_file(
                                     // have no extractable text. Reject rather than error
                                     // so the parent book doesn't appear broken.
                                     let reason = format!("{e:#}");
+                                    eprintln!("  chapter {} rejected: {reason}", chapter_path.display());
                                     queue
                                         .mark_rejected(chapter_id, &reason)
                                         .context("failed to mark chapter rejected")?;
