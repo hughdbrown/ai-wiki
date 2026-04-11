@@ -160,7 +160,7 @@ fn run_app<B: Backend>(
                     KeyCode::Char('n') => {
                         // Jump to next top-level item (parent_id is None)
                         if let Some(sel) = table_state.selected()
-                            && sel < items.len()
+                            && sel + 1 < items.len()
                             && let Some(pos) = items[sel + 1..]
                                 .iter()
                                 .position(|it| it.parent_id.is_none())
