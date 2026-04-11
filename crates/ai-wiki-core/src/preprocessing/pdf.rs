@@ -32,12 +32,26 @@ where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
+    // The mutex is held across the entire thread lifetime intentionally:
+    // the noop panic hook must remain installed while the PDF thread runs
+    // so that lopdf/pdf-extract panics don't print noise. This serializes
+    // concurrent PDF processing as a trade-off.
     let _guard = HOOK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
 
-    // Never use `?` between set_hook and restore — early returns would
-    // permanently replace the panic hook with the silent no-op above.
+    // Drop guard ensures the original panic hook is restored even if future
+    // edits introduce an early return between set_hook and the end of this fn.
+    struct RestoreHook(Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync>>);
+    impl Drop for RestoreHook {
+        fn drop(&mut self) {
+            if let Some(hook) = self.0.take() {
+                std::panic::set_hook(hook);
+            }
+        }
+    }
+    let _restore = RestoreHook(Some(prev_hook));
+
     let result = std::thread::Builder::new()
         .stack_size(PDF_THREAD_STACK_SIZE)
         .name("pdf-parse".into())
@@ -45,16 +59,13 @@ where
         // values, which are trivially unwind-safe.
         .spawn(move || std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)));
 
-    let result = match result {
+    match result {
         Ok(handle) => match handle.join() {
             Ok(Ok(val)) => Ok(val),
             Ok(Err(_)) | Err(_) => Err(()),
         },
         Err(_) => Err(()),
-    };
-
-    std::panic::set_hook(prev_hook);
-    result
+    }
 }
 
 pub fn classify_pdf(path: &Path) -> anyhow::Result<PdfClassification> {
