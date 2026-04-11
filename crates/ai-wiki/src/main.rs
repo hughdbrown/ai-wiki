@@ -262,7 +262,7 @@ fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> 
     });
 
     // Load or create app config
-    let mut app_config = AppConfig::load().unwrap_or_else(|_| AppConfig::default());
+    let mut app_config = AppConfig::load_or_create()?;
 
     if app_config.wikis.contains_key(&wiki_name) {
         anyhow::bail!("Wiki '{}' already registered", wiki_name);
@@ -328,7 +328,13 @@ fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> 
 }
 
 fn list() -> anyhow::Result<()> {
-    let app_config = AppConfig::load()?;
+    let app_config = match AppConfig::load() {
+        Ok(config) => config,
+        Err(_) => {
+            println!("No wikis registered. Run 'ai-wiki init' to create one.");
+            return Ok(());
+        }
+    };
     if app_config.wikis.is_empty() {
         println!("No wikis registered. Run 'ai-wiki init' to create one.");
         return Ok(());

@@ -73,32 +73,32 @@ impl Default for ToolsConfig {
 impl AppConfig {
     /// Returns the path to the global config file: ~/.ai-wiki/config.toml
     /// Can be overridden with the `AI_WIKI_CONFIG` environment variable (useful for tests).
-    pub fn config_path() -> PathBuf {
+    pub fn config_path() -> anyhow::Result<PathBuf> {
         if let Ok(path) = std::env::var("AI_WIKI_CONFIG") {
-            return PathBuf::from(path);
+            return Ok(PathBuf::from(path));
         }
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".ai-wiki")
-            .join("config.toml")
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?;
+        Ok(home.join(".ai-wiki").join("config.toml"))
     }
 
     /// Load the global config from ~/.ai-wiki/config.toml.
-    /// Creates the file with defaults if it does not exist.
+    /// Returns an error if the config file does not exist.
     pub fn load() -> anyhow::Result<Self> {
-        let path = Self::config_path();
+        let path = Self::config_path()?;
+        Self::load_from(&path)
+    }
+
+    /// Load the global config, creating it with defaults if it does not exist.
+    /// Use this only in commands that should bootstrap the config (e.g., `init`).
+    pub fn load_or_create() -> anyhow::Result<Self> {
+        let path = Self::config_path()?;
         if !path.exists() {
             let config = Self::default();
             config.save()?;
             return Ok(config);
         }
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("failed to read config file {}: {}", path.display(), e))?;
-        let config: AppConfig = toml::from_str(&content).map_err(|e| {
-            anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e)
-        })?;
-        config.validate_tools()?;
-        Ok(config)
+        Self::load_from(&path)
     }
 
     /// Load from a specific path (useful for tests).
@@ -114,7 +114,7 @@ impl AppConfig {
 
     /// Write the config to ~/.ai-wiki/config.toml.
     pub fn save(&self) -> anyhow::Result<()> {
-        let path = Self::config_path();
+        let path = Self::config_path()?;
         self.save_to(&path)
     }
 
@@ -158,17 +158,25 @@ impl AppConfig {
     }
 
     /// Check if the current working directory is at or under any wiki root.
+    /// When multiple wiki roots overlap, returns the most specific (longest) match.
     pub fn find_wiki_by_cwd(&self) -> Option<WikiConfig> {
-        let cwd = std::env::current_dir().ok()?;
+        let cwd = std::fs::canonicalize(std::env::current_dir().ok()?).ok()?;
+        let mut best: Option<(usize, &str, &WikiEntry)> = None;
         for (name, entry) in &self.wikis {
-            if cwd.starts_with(&entry.root) {
-                return Some(WikiConfig {
-                    name: name.clone(),
-                    root: entry.root.clone(),
-                });
+            let Some(canon_root) = std::fs::canonicalize(&entry.root).ok() else {
+                continue;
+            };
+            if cwd.starts_with(&canon_root) {
+                let depth = canon_root.components().count();
+                if best.as_ref().is_none_or(|(d, _, _)| depth > *d) {
+                    best = Some((depth, name.as_str(), entry));
+                }
             }
         }
-        None
+        best.map(|(_, name, entry)| WikiConfig {
+            name: name.to_string(),
+            root: entry.root.clone(),
+        })
     }
 
     /// Resolve a wiki: explicit name wins, then CWD match, then error.
