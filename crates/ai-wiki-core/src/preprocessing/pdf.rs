@@ -13,23 +13,34 @@ pub enum PdfClassification {
 }
 
 pub fn classify_pdf(path: &Path) -> anyhow::Result<PdfClassification> {
-    let doc =
-        Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
+    // Wrapped in catch_unwind because lopdf/pdf-extract can panic on malformed PDFs.
+    let path_owned = path.to_path_buf();
+    let result = std::panic::catch_unwind(|| -> anyhow::Result<PdfClassification> {
+        let doc = Document::load(&path_owned)
+            .with_context(|| format!("failed to load PDF: {}", path_owned.display()))?;
 
-    // Use get_toc() for reliable outline detection
-    let toc = match doc.get_toc() {
-        Ok(toc) if !toc.toc.is_empty() => toc,
-        _ => return Ok(PdfClassification::Simple),
-    };
+        let toc = match doc.get_toc() {
+            Ok(toc) if !toc.toc.is_empty() => toc,
+            _ => return Ok(PdfClassification::Simple),
+        };
 
-    let top_level_count = toc.toc.iter().filter(|e| e.level == 1).count();
+        let top_level_count = toc.toc.iter().filter(|e| e.level == 1).count();
 
-    if top_level_count > 0 {
-        Ok(PdfClassification::Book {
-            chapter_count: top_level_count,
-        })
-    } else {
-        Ok(PdfClassification::Simple)
+        if top_level_count > 0 {
+            Ok(PdfClassification::Book {
+                chapter_count: top_level_count,
+            })
+        } else {
+            Ok(PdfClassification::Simple)
+        }
+    });
+
+    match result {
+        Ok(inner) => inner,
+        Err(_) => Err(anyhow::anyhow!(
+            "PDF parser panicked while classifying {}",
+            path.display()
+        )),
     }
 }
 
@@ -38,30 +49,43 @@ pub fn split_pdf_chapters(
     output_dir: &Path,
     tools: &ToolsConfig,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let doc =
-        Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
+    // Extract TOC info inside catch_unwind since lopdf can panic on malformed PDFs.
+    let (total_pages, page_starts) = {
+        let path_owned = path.to_path_buf();
+        let result = std::panic::catch_unwind(|| -> anyhow::Result<(u32, Vec<u32>)> {
+            let doc = Document::load(&path_owned).with_context(|| {
+                format!("failed to load PDF: {}", path_owned.display())
+            })?;
 
-    let total_pages = doc.get_pages().len() as u32;
+            let total = doc.get_pages().len() as u32;
 
-    // Use get_toc() which properly resolves titles, page numbers, and nesting levels
-    let toc = doc
-        .get_toc()
-        .map_err(|e| anyhow::anyhow!("failed to get table of contents: {e}"))?;
+            let toc = doc
+                .get_toc()
+                .map_err(|e| anyhow::anyhow!("failed to get table of contents: {e}"))?;
 
-    // Only split on top-level (level 1) entries to avoid fragmenting into sub-sections
-    let top_level: Vec<_> = toc.toc.iter().filter(|e| e.level == 1).collect();
+            let top_level: Vec<_> = toc.toc.iter().filter(|e| e.level == 1).collect();
 
-    if top_level.is_empty() {
-        return Ok(vec![path.to_path_buf()]);
-    }
+            let mut starts: Vec<u32> = top_level
+                .iter()
+                .map(|e| e.page as u32)
+                .filter(|&p| (1..=total).contains(&p))
+                .collect();
+            starts.sort();
+            starts.dedup();
 
-    let mut page_starts: Vec<u32> = top_level
-        .iter()
-        .map(|e| e.page as u32)
-        .filter(|&p| (1..=total_pages).contains(&p))
-        .collect();
-    page_starts.sort();
-    page_starts.dedup();
+            Ok((total, starts))
+        });
+
+        match result {
+            Ok(inner) => inner?,
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "PDF parser panicked while reading TOC for {}",
+                    path.display()
+                ));
+            }
+        }
+    };
 
     if page_starts.is_empty() {
         return Ok(vec![path.to_path_buf()]);
