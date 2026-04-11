@@ -46,11 +46,9 @@ pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
 
     // Count only top-level queued items (parent_id IS NULL).
     // Children are processed as part of their parent's session.
-    let queued_parents = queue
-        .list_items(Some(&ai_wiki_core::queue::ItemStatus::Queued))?
-        .iter()
-        .filter(|item| item.parent_id.is_none())
-        .count();
+    let queued_parents = queue.count_queued_parents().with_context(|| {
+        "failed to count queued parents"
+    })?;
 
     if queued_parents == 0 {
         println!("No queued items to process.");
@@ -154,18 +152,9 @@ pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Claim the next queued item that has no parent (top-level item).
-/// Children are processed as part of their parent's session.
+/// Atomically claim the next queued parent item (skipping children).
 fn claim_next_parent(queue: &Queue) -> anyhow::Result<Option<QueueItem>> {
-    // Get all queued items sorted by creation time
-    let queued = queue.list_items(Some(&ItemStatus::Queued))?;
-    for item in queued {
-        if item.parent_id.is_none() {
-            queue.mark_in_progress(item.id)?;
-            return Ok(Some(item));
-        }
-    }
-    Ok(None)
+    Ok(queue.claim_next_queued_parent()?)
 }
 
 /// Gather the processed text file paths for an item.

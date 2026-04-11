@@ -470,18 +470,36 @@ impl Queue {
     /// compatibility. The Mutex ensures only one caller at a time. Do not call other
     /// transaction methods from within this method.
     pub fn claim_next_queued(&self) -> Result<Option<QueueItem>, QueueError> {
-        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
-        let item = tx
-            .query_row(
-                "SELECT id, file_path, file_type, status, parent_id, wiki_page_path,
+        self.claim_next_queued_where(None)
+    }
+
+    /// Return the oldest queued parent item (parent_id IS NULL) and atomically
+    /// mark it `in_progress`. Children are processed as part of their parent's
+    /// session, so this skips them.
+    ///
+    /// SAFETY: Same as `claim_next_queued`.
+    pub fn claim_next_queued_parent(&self) -> Result<Option<QueueItem>, QueueError> {
+        self.claim_next_queued_where(Some("AND parent_id IS NULL"))
+    }
+
+    /// Shared implementation for atomic claim operations.
+    fn claim_next_queued_where(
+        &self,
+        extra_where: Option<&str>,
+    ) -> Result<Option<QueueItem>, QueueError> {
+        let extra = extra_where.unwrap_or("");
+        let sql = format!(
+            "SELECT id, file_path, file_type, status, parent_id, wiki_page_path,
                     error_message, created_at, started_at, completed_at
              FROM queue_items
-             WHERE status = ?1
+             WHERE status = ?1 {extra}
              ORDER BY created_at ASC
-             LIMIT 1",
-                params![ItemStatus::Queued.as_str()],
-                Self::row_to_item,
-            )
+             LIMIT 1"
+        );
+
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let item = tx
+            .query_row(&sql, params![ItemStatus::Queued.as_str()], Self::row_to_item)
             .optional()?;
 
         let item = if let Some(mut item) = item {
@@ -499,6 +517,16 @@ impl Queue {
 
         tx.commit()?;
         Ok(item)
+    }
+
+    /// Count queued items that have no parent (top-level items only).
+    pub fn count_queued_parents(&self) -> Result<u64, QueueError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM queue_items WHERE status = ?1 AND parent_id IS NULL",
+            params![ItemStatus::Queued.as_str()],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
     }
 
     // ─── Helper ───────────────────────────────────────────────────────────────
@@ -869,5 +897,47 @@ mod tests {
         let id = q.enqueue(Path::new("a.txt"), FileType::Text, None).unwrap();
         // Can't requeue a queued item (not in error or rejected state)
         assert!(q.requeue_item(id).is_err());
+    }
+
+    #[test]
+    fn test_claim_next_queued_parent_skips_children() {
+        let q = make_queue();
+        let parent = q.enqueue(Path::new("book.pdf"), FileType::Pdf, None).unwrap();
+        q.enqueue(Path::new("ch1.txt"), FileType::Text, Some(parent)).unwrap();
+        q.enqueue(Path::new("ch2.txt"), FileType::Text, Some(parent)).unwrap();
+
+        // Should claim the parent, not a child
+        let item = q.claim_next_queued_parent().unwrap().unwrap();
+        assert_eq!(item.id, parent);
+        assert_eq!(item.status, ItemStatus::InProgress);
+
+        // No more parents to claim
+        assert!(q.claim_next_queued_parent().unwrap().is_none());
+
+        // But regular claim_next_queued still finds children
+        assert!(q.claim_next_queued().unwrap().is_some());
+    }
+
+    #[test]
+    fn test_claim_next_queued_parent_empty() {
+        let q = make_queue();
+        assert!(q.claim_next_queued_parent().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_count_queued_parents() {
+        let q = make_queue();
+        assert_eq!(q.count_queued_parents().unwrap(), 0);
+
+        let p1 = q.enqueue(Path::new("a.pdf"), FileType::Pdf, None).unwrap();
+        q.enqueue(Path::new("b.pdf"), FileType::Pdf, None).unwrap();
+        q.enqueue(Path::new("ch1.txt"), FileType::Text, Some(p1)).unwrap();
+
+        // Two parents, one child
+        assert_eq!(q.count_queued_parents().unwrap(), 2);
+
+        // Claiming a parent decreases count
+        q.claim_next_queued_parent().unwrap();
+        assert_eq!(q.count_queued_parents().unwrap(), 1);
     }
 }
