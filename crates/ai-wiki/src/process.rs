@@ -90,19 +90,19 @@ pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
 
         eprint!("[{processed}] {file_name} ... ");
 
-        // Collect processed text paths for this item
-        let text_paths = match gather_text_paths(&item, &queue, wiki) {
-            Ok(paths) => paths,
+        // Read processed text in Rust — embed in prompt to avoid file-read tool calls
+        let texts = match gather_text(&item, &queue, wiki) {
+            Ok(t) => t,
             Err(e) => {
                 queue
-                    .mark_error(item.id, &format!("Failed to gather text paths: {e:#}"))
+                    .mark_error(item.id, &format!("Failed to read text: {e:#}"))
                     .context("failed to mark item error")?;
-                eprintln!("error (gather text paths): {e:#}");
+                eprintln!("error (read text): {e:#}");
                 errors += 1;
                 continue;
             }
         };
-        if text_paths.is_empty() {
+        if texts.is_empty() {
             queue
                 .mark_error(item.id, "No processed text available")
                 .context("failed to mark item error")?;
@@ -111,7 +111,7 @@ pub fn run(wiki: &WikiConfig, opts: &ProcessOptions) -> anyhow::Result<()> {
             continue;
         }
 
-        let prompt = build_item_prompt(wiki, &item, &text_paths, &file_name);
+        let prompt = build_item_prompt(wiki, &item, &texts, &file_name);
 
         let item_start = std::time::Instant::now();
         match run_claude_session(&prompt, opts) {
@@ -166,20 +166,22 @@ fn claim_next_parent(queue: &Queue) -> anyhow::Result<Option<QueueItem>> {
     Ok(queue.claim_next_queued_parent()?)
 }
 
-/// Gather the processed text file paths for an item.
-/// For a book parent, returns the children's text files.
-/// For a leaf item, returns its own text file.
-fn gather_text_paths(
+/// Read the processed text for an item and its children.
+/// Returns (child_id, text_content) pairs. Reads files in Rust so the
+/// prompt can embed the text directly, eliminating file-read tool calls.
+fn gather_text(
     item: &QueueItem,
     queue: &Queue,
     wiki: &WikiConfig,
 ) -> anyhow::Result<Vec<(i64, String)>> {
-    let mut paths = Vec::new();
+    let mut texts = Vec::new();
 
     // Check if this item has its own processed text
     let own_path = wiki.processed_text_path(item.id);
     if own_path.exists() {
-        paths.push((item.id, own_path.display().to_string()));
+        let content = std::fs::read_to_string(&own_path)
+            .with_context(|| format!("failed to read {}", own_path.display()))?;
+        texts.push((item.id, content));
     }
 
     // For book parents, also gather children's text
@@ -192,11 +194,13 @@ fn gather_text_paths(
         }
         let child_path = wiki.processed_text_path(child.id);
         if child_path.exists() {
-            paths.push((child.id, child_path.display().to_string()));
+            let content = std::fs::read_to_string(&child_path)
+                .with_context(|| format!("failed to read {}", child_path.display()))?;
+            texts.push((child.id, content));
         }
     }
 
-    Ok(paths)
+    Ok(texts)
 }
 
 /// Spawn a fresh Claude session with the given prompt.
@@ -204,7 +208,13 @@ fn run_claude_session(prompt: &str, opts: &ProcessOptions) -> anyhow::Result<()>
     let mut cmd = Command::new("claude");
     cmd.arg("--print")
         .arg("--verbose")
-        .arg("--dangerously-skip-permissions");
+        .arg("--dangerously-skip-permissions")
+        // Skip hooks, plugins, MCP servers, CLAUDE.md — none needed for wiki generation.
+        .arg("--bare")
+        // Don't persist sessions to disk — these are one-shot.
+        .arg("--no-session-persistence")
+        // Cap turns to prevent runaway sessions.
+        .arg("--max-turns").arg("30");
 
     if let Some(ref model) = opts.model {
         cmd.arg("--model").arg(model);
@@ -237,23 +247,36 @@ fn run_claude_session(prompt: &str, opts: &ProcessOptions) -> anyhow::Result<()>
     Ok(())
 }
 
-fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, text_paths: &[(i64, String)], file_name: &str) -> String {
+fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, texts: &[(i64, String)], file_name: &str) -> String {
     let wiki_dir = wiki.wiki_dir().display().to_string();
     let wiki_name = &wiki.name;
     let today = chrono::Utc::now().format("%Y-%m-%d");
     let item_id = item.id;
 
-    let is_book = text_paths.len() > 1
-        || (item.parent_id.is_none() && text_paths.iter().any(|(id, _)| *id != item.id));
+    let is_book = texts.len() > 1
+        || (item.parent_id.is_none() && texts.iter().any(|(id, _)| *id != item.id));
 
-    let text_file_list: String = text_paths
+    // Embed source text directly in the prompt to avoid file-read tool calls.
+    let embedded_text: String = texts
         .iter()
-        .map(|(id, path)| format!("  - ID {id}: `{path}`"))
+        .enumerate()
+        .map(|(i, (id, content))| {
+            // Truncate very large chapters to stay within reasonable prompt size.
+            let truncated = if content.len() > 200_000 {
+                format!("{}...\n[truncated — {} bytes total]", &content[..200_000], content.len())
+            } else {
+                content.clone()
+            };
+            format!(
+                "### Part {} (ID {id})\n\n{truncated}",
+                i + 1,
+            )
+        })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n\n---\n\n");
 
     // Build list of children IDs for the mark-complete step
-    let child_ids: Vec<i64> = text_paths
+    let child_ids: Vec<i64> = texts
         .iter()
         .filter(|(id, _)| *id != item.id)
         .map(|(id, _)| *id)
@@ -277,9 +300,9 @@ fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, text_paths: &[(i64, St
     };
 
     let book_hint = if is_book {
-        "This is a **book with multiple chapters**. Read ALL chapter files to build a comprehensive summary."
+        "This is a **book with multiple chapters**. The full text is provided below."
     } else {
-        "This is a single document."
+        "This is a single document. The full text is provided below."
     };
 
     format!(
@@ -293,12 +316,13 @@ fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, text_paths: &[(i64, St
 - **Item ID:** {item_id}
 - {book_hint}
 
-### Processed text files to read:
-{text_file_list}
+## Source Text
+
+{embedded_text}
 
 ## Pass 1: Source Summary
 
-Read all the processed text files listed above, then create a source summary page.
+Create a source summary page from the text above.
 
 1. **Create `{wiki_dir}/sources/<slug>.md`** with:
    - YAML frontmatter: type, tags, sources, created, updated
@@ -323,7 +347,7 @@ Read all the processed text files listed above, then create a source summary pag
 
 ## Pass 2: Concept and Claim Extraction
 
-Now re-read the source text and extract knowledge into dedicated pages.
+Now extract knowledge from the source text into dedicated pages.
 
 3. **Create concept pages** in `{wiki_dir}/concepts/`:
    - Extract **at least 5 key concepts** from the source material
@@ -373,7 +397,7 @@ Now re-read the source text and extract knowledge into dedicated pages.
         wiki_dir = wiki_dir,
         file_name = file_name,
         item_id = item_id,
-        text_file_list = text_file_list,
+        embedded_text = embedded_text,
         book_hint = book_hint,
         today = today,
         mark_children_complete = mark_children_complete,
@@ -403,8 +427,8 @@ mod tests {
             started_at: Some(chrono::Utc::now()),
             completed_at: None,
         };
-        let text_paths = vec![(42, "/tmp/test-wiki/processed/42.txt".to_string())];
-        let prompt = build_item_prompt(&wiki, &item, &text_paths, "source.pdf");
+        let texts = vec![(42, "Sample extracted text from a PDF source document.".to_string())];
+        let prompt = build_item_prompt(&wiki, &item, &texts, "source.pdf");
 
         assert!(prompt.contains("Item ID:** 42"));
         assert!(prompt.contains("source.pdf"));
@@ -412,6 +436,7 @@ mod tests {
         assert!(prompt.contains("Pass 2: Concept and Claim Extraction"));
         assert!(prompt.contains("at least 5 key concepts"));
         assert!(prompt.contains("queue complete 42"));
+        assert!(prompt.contains("Sample extracted text"));
         assert!(prompt.contains(&wiki.wiki_dir().display().to_string()));
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         assert!(prompt.contains(&today));
@@ -436,16 +461,18 @@ mod tests {
             started_at: Some(chrono::Utc::now()),
             completed_at: None,
         };
-        let text_paths = vec![
-            (11, "/tmp/test-wiki/processed/11.txt".to_string()),
-            (12, "/tmp/test-wiki/processed/12.txt".to_string()),
+        let texts = vec![
+            (11, "Chapter 1 content.".to_string()),
+            (12, "Chapter 2 content.".to_string()),
         ];
-        let prompt = build_item_prompt(&wiki, &item, &text_paths, "book.pdf");
+        let prompt = build_item_prompt(&wiki, &item, &texts, "book.pdf");
 
         assert!(prompt.contains("queue complete 10"));
         assert!(prompt.contains("queue complete 11"));
         assert!(prompt.contains("queue complete 12"));
         assert!(prompt.contains("book with multiple chapters"));
+        assert!(prompt.contains("Chapter 1 content."));
+        assert!(prompt.contains("Chapter 2 content."));
     }
 
     #[test]
