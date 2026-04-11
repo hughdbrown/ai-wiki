@@ -239,6 +239,18 @@ fn clear(wiki: &WikiConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn init_wiki_dirs(wiki_config: &WikiConfig) -> anyhow::Result<()> {
+    std::fs::create_dir_all(wiki_config.wiki_dir())?;
+    std::fs::create_dir_all(wiki_config.processed_dir())?;
+    std::fs::create_dir_all(wiki_config.raw_dir())?;
+
+    let wiki = ai_wiki_core::wiki::Wiki::new(wiki_config.wiki_dir());
+    wiki.init()?;
+
+    let _queue = ai_wiki_core::queue::Queue::open(&wiki_config.database_path())?;
+    Ok(())
+}
+
 fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> {
     let dir = directory.unwrap_or_else(|| std::env::current_dir().unwrap());
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
@@ -256,21 +268,28 @@ fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> 
         anyhow::bail!("Wiki '{}' already registered", wiki_name);
     }
 
+    // Resolve whisper_model_path to absolute if it is relative
+    if app_config.tools.whisper_model_path.is_relative() {
+        app_config.tools.whisper_model_path = dir.join(&app_config.tools.whisper_model_path);
+    }
+
     // Create directory structure
     let wiki_config = WikiConfig {
         name: wiki_name.clone(),
         root: dir.clone(),
     };
-    std::fs::create_dir_all(wiki_config.wiki_dir())?;
-    std::fs::create_dir_all(wiki_config.processed_dir())?;
-    std::fs::create_dir_all(wiki_config.raw_dir())?;
 
-    // Init wiki vault
-    let wiki = ai_wiki_core::wiki::Wiki::new(wiki_config.wiki_dir());
-    wiki.init()?;
-
-    // Create database
-    let _queue = ai_wiki_core::queue::Queue::open(&wiki_config.database_path())?;
+    if let Err(e) = init_wiki_dirs(&wiki_config) {
+        // Clean up partially-created directories on failure
+        let _ = std::fs::remove_dir_all(wiki_config.wiki_dir());
+        let _ = std::fs::remove_dir_all(wiki_config.processed_dir());
+        let _ = std::fs::remove_dir_all(wiki_config.raw_dir());
+        let _ = std::fs::remove_file(wiki_config.database_path());
+        return Err(e.context(format!(
+            "init failed; any partially-created directories under {} have been cleaned up",
+            wiki_config.root.display()
+        )));
+    }
 
     // Register in config
     app_config.register_wiki(wiki_name.clone(), dir);
