@@ -60,10 +60,14 @@ pub fn split_pdf_chapters(
     let mut page_starts: Vec<u32> = top_level
         .iter()
         .map(|e| e.page as u32)
-        .filter(|&p| p >= 1 && p <= total_pages)
+        .filter(|&p| (1..=total_pages).contains(&p))
         .collect();
     page_starts.sort();
     page_starts.dedup();
+
+    if page_starts.is_empty() {
+        return Ok(vec![path.to_path_buf()]);
+    }
 
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create output dir: {}", output_dir.display()))?;
