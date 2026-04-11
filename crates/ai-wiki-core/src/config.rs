@@ -147,6 +147,21 @@ impl AppConfig {
         std::fs::write(path, content).map_err(|e| {
             anyhow::anyhow!("failed to write config file {}: {}", path.display(), e)
         })?;
+
+        // Config may contain auth preferences — restrict to owner-only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(path, perms).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to set permissions on config file {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+        }
+
         Ok(())
     }
 
