@@ -1,5 +1,8 @@
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::Context;
 
@@ -77,7 +80,19 @@ pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
             .context("failed to write prompt to claude stdin")?;
     }
 
+    // Spawn a background thread to poll the queue and print progress
+    let stop = Arc::new(AtomicBool::new(false));
+    let progress_handle = {
+        let stop = Arc::clone(&stop);
+        let db_path: PathBuf = wiki.database_path();
+        std::thread::spawn(move || print_progress_loop(&db_path, total, &stop))
+    };
+
     let status = child.wait().context("failed to wait for claude process")?;
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = progress_handle.join();
+
     if !status.success() {
         anyhow::bail!("claude exited with status: {status}");
     }
@@ -101,6 +116,46 @@ pub fn run(wiki: &WikiConfig) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+fn print_progress_loop(db_path: &PathBuf, initial_queued: usize, stop: &AtomicBool) {
+    let mut last_complete: u64 = 0;
+    let mut last_error: u64 = 0;
+
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let Ok(queue) = Queue::open(db_path) else {
+            continue;
+        };
+        let Ok(counts) = queue.count_by_status() else {
+            continue;
+        };
+
+        let get = |s: &str| -> u64 {
+            counts
+                .iter()
+                .find(|(name, _)| name == s)
+                .map(|(_, n)| *n)
+                .unwrap_or(0)
+        };
+
+        let complete = get("complete");
+        let error = get("error");
+        let in_progress = get("in_progress");
+
+        if complete != last_complete || error != last_error {
+            let done = complete + error;
+            eprintln!(
+                "  Progress: {done}/{initial_queued} ({complete} complete, {error} errors, {in_progress} in progress)"
+            );
+            last_complete = complete;
+            last_error = error;
+        }
+    }
 }
 
 fn build_prompt(wiki: &WikiConfig, total: usize) -> String {
