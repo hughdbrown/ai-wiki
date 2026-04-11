@@ -141,6 +141,14 @@ impl AppConfig {
                     e
                 )
             })?;
+
+            // Restrict config directory to owner-only access.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o700);
+                let _ = std::fs::set_permissions(parent, perms);
+            }
         }
         let content = toml::to_string_pretty(self)
             .map_err(|e| anyhow::anyhow!("failed to serialize config: {}", e))?;
