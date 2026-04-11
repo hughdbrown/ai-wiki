@@ -3,12 +3,12 @@ use std::process::Command;
 
 use anyhow::Context;
 
-use crate::config::Config;
+use crate::config::ToolsConfig;
 
 pub fn extract_audio(
     video_path: &Path,
     output_dir: &Path,
-    config: &Config,
+    tools: &ToolsConfig,
 ) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create output dir: {}", output_dir.display()))?;
@@ -21,7 +21,7 @@ pub fn extract_audio(
     let output_path = output_dir.join(format!("{stem}.wav"));
 
     let status = super::run_tool(
-        Command::new(&config.tools.ffmpeg_path)
+        Command::new(&tools.ffmpeg_path)
             .arg("-i")
             .arg(video_path)
             .arg("-vn")
@@ -46,11 +46,11 @@ pub fn extract_audio(
     Ok(output_path)
 }
 
-pub fn transcribe_audio(audio_path: &Path, config: &Config) -> anyhow::Result<String> {
+pub fn transcribe_audio(audio_path: &Path, tools: &ToolsConfig) -> anyhow::Result<String> {
     let output = super::run_tool_output(
-        Command::new(&config.tools.whisper_cpp_path)
+        Command::new(&tools.whisper_cpp_path)
             .arg("-m")
-            .arg(&config.tools.whisper_model_path)
+            .arg(&tools.whisper_model_path)
             .arg("-f")
             .arg(audio_path)
             .arg("--output-txt")

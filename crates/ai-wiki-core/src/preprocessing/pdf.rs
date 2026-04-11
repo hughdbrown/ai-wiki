@@ -4,7 +4,7 @@ use std::process::Command;
 use anyhow::Context;
 use lopdf::Document;
 
-use crate::config::Config;
+use crate::config::ToolsConfig;
 
 #[derive(Debug, PartialEq)]
 pub enum PdfClassification {
@@ -12,11 +12,9 @@ pub enum PdfClassification {
     Book { chapter_count: usize },
 }
 
-pub fn classify_pdf(path: &Path, config: &Config) -> anyhow::Result<PdfClassification> {
+pub fn classify_pdf(path: &Path) -> anyhow::Result<PdfClassification> {
     let doc =
         Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
-
-    let page_count = doc.get_pages().len() as u32;
 
     // Use get_toc() for reliable outline detection
     let toc = match doc.get_toc() {
@@ -26,7 +24,7 @@ pub fn classify_pdf(path: &Path, config: &Config) -> anyhow::Result<PdfClassific
 
     let top_level_count = toc.toc.iter().filter(|e| e.level == 1).count();
 
-    if top_level_count > 0 && page_count >= config.pdf.book_min_pages {
+    if top_level_count > 0 {
         Ok(PdfClassification::Book {
             chapter_count: top_level_count,
         })
@@ -38,7 +36,7 @@ pub fn classify_pdf(path: &Path, config: &Config) -> anyhow::Result<PdfClassific
 pub fn split_pdf_chapters(
     path: &Path,
     output_dir: &Path,
-    config: &Config,
+    tools: &ToolsConfig,
 ) -> anyhow::Result<Vec<PathBuf>> {
     let doc =
         Document::load(path).with_context(|| format!("failed to load PDF: {}", path.display()))?;
@@ -91,7 +89,7 @@ pub fn split_pdf_chapters(
 
         let output_path = output_dir.join(format!("{stem}_chapter_{:03}.pdf", i + 1));
         let status = super::run_tool(
-            Command::new(&config.tools.qpdf_path)
+            Command::new(&tools.qpdf_path)
                 .arg(path)
                 .arg("--pages")
                 .arg(".")
@@ -115,7 +113,7 @@ pub fn split_pdf_chapters(
     Ok(output_paths)
 }
 
-pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
+pub fn extract_pdf_text(path: &Path, tools: &ToolsConfig) -> anyhow::Result<String> {
     // Try pdf_extract::extract_text first.
     // Wrapped in catch_unwind because the upstream cff-parser crate can panic
     // on malformed PDFs (e.g., cff-parser-0.1.0/src/encoding.rs:150).
@@ -127,14 +125,14 @@ pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> 
         Ok(Ok(text)) if !text.trim().is_empty() => return Ok(text),
         Ok(Err(_)) | Err(_) => {
             // pdf-extract failed or panicked (common with CFF font encoding issues).
-            // Not worth logging — pdftotext handles these files fine.
+            // Not worth logging -- pdftotext handles these files fine.
         }
         _ => {} // empty text, fall through
     }
 
     // Fallback to pdftotext (poppler) via Command
     let pdftotext_result = super::run_tool_output(
-        Command::new(&config.tools.pdftotext_path)
+        Command::new(&tools.pdftotext_path)
             .arg(path)
             .arg("-"),
         "pdftotext",
@@ -150,10 +148,10 @@ pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> 
     }
 
     // Fallback: render PDF pages to images with pdftoppm, then OCR each with tesseract
-    match ocr_pdf_text(path, config) {
+    match ocr_pdf_text(path, tools) {
         Ok(text) => Ok(text),
         Err(e) => Err(anyhow::anyhow!(
-            "failed to extract text from PDF: {} — all methods (pdf-extract, pdftotext, tesseract) failed: {}",
+            "failed to extract text from PDF: {} -- all methods (pdf-extract, pdftotext, tesseract) failed: {}",
             path.display(),
             e
         )),
@@ -161,9 +159,8 @@ pub fn extract_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> 
 }
 
 // OCR fallback: render pages to images, then tesseract each
-fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
-    let temp_dir =
-        tempfile::tempdir().context("failed to create temp directory for OCR")?;
+fn ocr_pdf_text(path: &Path, tools: &ToolsConfig) -> anyhow::Result<String> {
+    let temp_dir = tempfile::tempdir().context("failed to create temp directory for OCR")?;
 
     let path_str = path
         .to_str()
@@ -178,7 +175,7 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
 
     // Render PDF pages to PPM images
     let status = super::run_tool(
-        Command::new(&config.tools.pdftoppm_path)
+        Command::new(&tools.pdftoppm_path)
             .arg(path_str)
             .arg(page_prefix_str),
         "pdftoppm",
@@ -200,9 +197,14 @@ fn ocr_pdf_text(path: &Path, config: &Config) -> anyhow::Result<String> {
     for page_img in &pages {
         let page_img_str = page_img
             .to_str()
-            .ok_or_else(|| anyhow::anyhow!("page image path is not valid UTF-8: {}", page_img.display()))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "page image path is not valid UTF-8: {}",
+                    page_img.display()
+                )
+            })?;
         let output = super::run_tool_output(
-            Command::new(&config.tools.tesseract_path).args([page_img_str, "stdout"]),
+            Command::new(&tools.tesseract_path).args([page_img_str, "stdout"]),
             "tesseract",
         )?;
 

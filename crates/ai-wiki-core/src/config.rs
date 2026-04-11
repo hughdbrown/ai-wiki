@@ -1,31 +1,48 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
+/// Global application config, read from ~/.ai-wiki/config.toml
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
-    pub paths: PathsConfig,
-    pub pdf: PdfConfig,
-    pub rejection: RejectionConfig,
+pub struct AppConfig {
     pub tools: ToolsConfig,
+    pub wikis: HashMap<String, WikiEntry>,
 }
 
+/// Per-wiki config entry -- just a root directory
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PathsConfig {
-    pub raw_dir: PathBuf,
-    pub wiki_dir: PathBuf,
-    pub database_path: PathBuf,
-    pub processed_dir: PathBuf,
+pub struct WikiEntry {
+    pub root: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PdfConfig {
-    pub book_min_pages: u32,
+/// Resolved wiki with derived paths -- not serialized
+#[derive(Debug, Clone)]
+pub struct WikiConfig {
+    pub name: String,
+    pub root: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RejectionConfig {
-    pub non_operative_extensions: Vec<String>,
-    pub sensitive_filename_patterns: Vec<String>,
+impl WikiConfig {
+    pub fn wiki_dir(&self) -> PathBuf {
+        self.root.join("wiki")
+    }
+
+    pub fn processed_dir(&self) -> PathBuf {
+        self.root.join("processed")
+    }
+
+    pub fn raw_dir(&self) -> PathBuf {
+        self.root.join("raw")
+    }
+
+    pub fn database_path(&self) -> PathBuf {
+        self.root.join("ai-wiki.db")
+    }
+
+    pub fn processed_text_path(&self, id: i64) -> PathBuf {
+        self.processed_dir().join(format!("{id}.txt"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,56 +56,158 @@ pub struct ToolsConfig {
     pub whisper_model_path: PathBuf,
 }
 
-impl Default for Config {
+impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
-            paths: PathsConfig {
-                raw_dir: PathBuf::from("raw"),
-                wiki_dir: PathBuf::from("wiki"),
-                database_path: PathBuf::from("ai-wiki.db"),
-                processed_dir: PathBuf::from("processed"),
-            },
-            pdf: PdfConfig { book_min_pages: 50 },
-            rejection: RejectionConfig {
-                non_operative_extensions: vec![".dmg".to_string()],
-                sensitive_filename_patterns: vec![
-                    "divorce".to_string(),
-                    "court".to_string(),
-                    "bank.statement".to_string(),
-                    "tax.return".to_string(),
-                    "report.card".to_string(),
-                    "financial".to_string(),
-                    "lease".to_string(),
-                ],
-            },
-            tools: ToolsConfig {
-                qpdf_path: "qpdf".to_string(),
-                pdftotext_path: "pdftotext".to_string(),
-                pdftoppm_path: "pdftoppm".to_string(),
-                tesseract_path: "tesseract".to_string(),
-                ffmpeg_path: "ffmpeg".to_string(),
-                whisper_cpp_path: "whisper-cpp".to_string(),
-                whisper_model_path: PathBuf::from("models/ggml-large-v3.bin"),
-            },
+            qpdf_path: "qpdf".to_string(),
+            pdftotext_path: "pdftotext".to_string(),
+            pdftoppm_path: "pdftoppm".to_string(),
+            tesseract_path: "tesseract".to_string(),
+            ffmpeg_path: "ffmpeg".to_string(),
+            whisper_cpp_path: "whisper-cpp".to_string(),
+            whisper_model_path: PathBuf::from("models/ggml-large-v3.bin"),
         }
     }
 }
 
-impl PathsConfig {
-    /// Return the path where processed text for a given queue item ID is stored.
-    ///
-    /// This is the single source of truth for the `{id}.txt` naming convention.
-    pub fn processed_text_path(&self, id: i64) -> PathBuf {
-        self.processed_dir.join(format!("{id}.txt"))
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            tools: ToolsConfig::default(),
+            wikis: HashMap::new(),
+        }
     }
 }
 
-impl Config {
-    pub fn validate(&self) -> anyhow::Result<()> {
-        if self.pdf.book_min_pages == 0 {
-            anyhow::bail!("pdf.book_min_pages must be greater than 0");
+impl AppConfig {
+    /// Returns the path to the global config file: ~/.ai-wiki/config.toml
+    pub fn config_path() -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".ai-wiki")
+            .join("config.toml")
+    }
+
+    /// Load the global config from ~/.ai-wiki/config.toml.
+    /// Creates the file with defaults if it does not exist.
+    pub fn load() -> anyhow::Result<Self> {
+        let path = Self::config_path();
+        if !path.exists() {
+            let config = Self::default();
+            config.save()?;
+            return Ok(config);
+        }
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            anyhow::anyhow!("failed to read config file {}: {}", path.display(), e)
+        })?;
+        let config: AppConfig = toml::from_str(&content).map_err(|e| {
+            anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e)
+        })?;
+        config.validate_tools()?;
+        Ok(config)
+    }
+
+    /// Load from a specific path (useful for tests).
+    pub fn load_from(path: &Path) -> anyhow::Result<Self> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            anyhow::anyhow!("failed to read config file {}: {}", path.display(), e)
+        })?;
+        let config: AppConfig = toml::from_str(&content).map_err(|e| {
+            anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e)
+        })?;
+        config.validate_tools()?;
+        Ok(config)
+    }
+
+    /// Write the config to ~/.ai-wiki/config.toml.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        self.save_to(&path)
+    }
+
+    /// Write the config to a specific path (useful for tests).
+    pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to create config directory {}: {}",
+                    parent.display(),
+                    e
+                )
+            })?;
+        }
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| anyhow::anyhow!("failed to serialize config: {}", e))?;
+        std::fs::write(path, content).map_err(|e| {
+            anyhow::anyhow!("failed to write config file {}: {}", path.display(), e)
+        })?;
+        Ok(())
+    }
+
+    /// Look up a wiki by name and return a resolved WikiConfig.
+    pub fn resolve_wiki(&self, name: &str) -> anyhow::Result<WikiConfig> {
+        let entry = self.wikis.get(name).ok_or_else(|| {
+            let available: Vec<&str> = self.wikis.keys().map(|s| s.as_str()).collect();
+            if available.is_empty() {
+                anyhow::anyhow!("wiki '{}' not found. No wikis registered.", name)
+            } else {
+                anyhow::anyhow!(
+                    "wiki '{}' not found. Available wikis: {}",
+                    name,
+                    available.join(", ")
+                )
+            }
+        })?;
+        Ok(WikiConfig {
+            name: name.to_string(),
+            root: entry.root.clone(),
+        })
+    }
+
+    /// Check if the current working directory is at or under any wiki root.
+    pub fn find_wiki_by_cwd(&self) -> Option<WikiConfig> {
+        let cwd = std::env::current_dir().ok()?;
+        for (name, entry) in &self.wikis {
+            if cwd.starts_with(&entry.root) {
+                return Some(WikiConfig {
+                    name: name.clone(),
+                    root: entry.root.clone(),
+                });
+            }
+        }
+        None
+    }
+
+    /// Resolve a wiki: explicit name wins, then CWD match, then error.
+    pub fn resolve_wiki_auto(&self, explicit_name: Option<&str>) -> anyhow::Result<WikiConfig> {
+        if let Some(name) = explicit_name {
+            return self.resolve_wiki(name);
         }
 
+        if let Some(wiki) = self.find_wiki_by_cwd() {
+            return Ok(wiki);
+        }
+
+        let available: Vec<&str> = self.wikis.keys().map(|s| s.as_str()).collect();
+        if available.is_empty() {
+            anyhow::bail!(
+                "no wiki specified and CWD is not under any wiki root. No wikis registered. Run `ai-wiki init` to create one."
+            );
+        } else {
+            anyhow::bail!(
+                "no wiki specified and CWD is not under any wiki root. Available wikis: {}",
+                available.join(", ")
+            );
+        }
+    }
+
+    /// Register a wiki entry. Overwrites if name already exists.
+    pub fn register_wiki(&mut self, name: String, root: PathBuf) {
+        self.wikis.insert(name, WikiEntry { root });
+    }
+
+    /// Validate that tool paths are non-empty.
+    pub fn validate_tools(&self) -> anyhow::Result<()> {
         let tool_paths = [
             ("qpdf_path", &self.tools.qpdf_path),
             ("pdftotext_path", &self.tools.pdftotext_path),
@@ -109,25 +228,6 @@ impl Config {
 
         Ok(())
     }
-
-    pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("failed to read config file {}: {}", path.display(), e))?;
-        let config: Config = toml::from_str(&content).map_err(|e| {
-            anyhow::anyhow!("failed to parse config file {}: {}", path.display(), e)
-        })?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    pub fn save(&self, path: &std::path::Path) -> anyhow::Result<()> {
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("failed to serialize config: {}", e))?;
-        std::fs::write(path, content).map_err(|e| {
-            anyhow::anyhow!("failed to write config file {}: {}", path.display(), e)
-        })?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -137,14 +237,15 @@ mod tests {
 
     #[test]
     fn test_default_config_round_trips() {
-        let config = Config::default();
+        let mut config = AppConfig::default();
+        config.register_wiki("test".to_string(), PathBuf::from("/tmp/test-wiki"));
         let serialized = toml::to_string_pretty(&config).unwrap();
-        let deserialized: Config = toml::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.pdf.book_min_pages, 50);
-        assert_eq!(deserialized.paths.raw_dir, PathBuf::from("raw"));
+        let deserialized: AppConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.tools.qpdf_path, "qpdf");
+        assert!(deserialized.wikis.contains_key("test"));
         assert_eq!(
-            deserialized.rejection.non_operative_extensions,
-            vec![".dmg"]
+            deserialized.wikis["test"].root,
+            PathBuf::from("/tmp/test-wiki")
         );
     }
 
@@ -152,17 +253,18 @@ mod tests {
     fn test_load_config_from_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let config = Config::default();
-        config.save(&path).unwrap();
+        let mut config = AppConfig::default();
+        config.register_wiki("mywiki".to_string(), PathBuf::from("/tmp/mywiki"));
+        config.save_to(&path).unwrap();
 
-        let loaded = Config::load(&path).unwrap();
-        assert_eq!(loaded.pdf.book_min_pages, config.pdf.book_min_pages);
-        assert_eq!(loaded.paths.wiki_dir, config.paths.wiki_dir);
+        let loaded = AppConfig::load_from(&path).unwrap();
+        assert_eq!(loaded.tools.qpdf_path, config.tools.qpdf_path);
+        assert!(loaded.wikis.contains_key("mywiki"));
     }
 
     #[test]
     fn test_load_missing_file_returns_error() {
-        let result = Config::load(std::path::Path::new("/nonexistent/config.toml"));
+        let result = AppConfig::load_from(Path::new("/nonexistent/config.toml"));
         assert!(result.is_err());
     }
 
@@ -173,26 +275,63 @@ mod tests {
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(b"this is not valid toml [[[").unwrap();
 
-        let result = Config::load(&path);
+        let result = AppConfig::load_from(&path);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_default_config_validates() {
-        Config::default().validate().unwrap();
-    }
-
-    #[test]
-    fn test_validate_rejects_zero_book_min_pages() {
-        let mut config = Config::default();
-        config.pdf.book_min_pages = 0;
-        assert!(config.validate().is_err());
+        AppConfig::default().validate_tools().unwrap();
     }
 
     #[test]
     fn test_validate_rejects_empty_tool_path() {
-        let mut config = Config::default();
+        let mut config = AppConfig::default();
         config.tools.qpdf_path = String::new();
-        assert!(config.validate().is_err());
+        assert!(config.validate_tools().is_err());
+    }
+
+    #[test]
+    fn test_resolve_wiki() {
+        let mut config = AppConfig::default();
+        config.register_wiki("rust".to_string(), PathBuf::from("/wikis/rust"));
+
+        let wiki = config.resolve_wiki("rust").unwrap();
+        assert_eq!(wiki.name, "rust");
+        assert_eq!(wiki.root, PathBuf::from("/wikis/rust"));
+    }
+
+    #[test]
+    fn test_resolve_wiki_not_found() {
+        let config = AppConfig::default();
+        let result = config.resolve_wiki("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wiki_config_derived_paths() {
+        let wiki = WikiConfig {
+            name: "test".to_string(),
+            root: PathBuf::from("/wikis/test"),
+        };
+        assert_eq!(wiki.wiki_dir(), PathBuf::from("/wikis/test/wiki"));
+        assert_eq!(wiki.processed_dir(), PathBuf::from("/wikis/test/processed"));
+        assert_eq!(wiki.raw_dir(), PathBuf::from("/wikis/test/raw"));
+        assert_eq!(
+            wiki.database_path(),
+            PathBuf::from("/wikis/test/ai-wiki.db")
+        );
+        assert_eq!(
+            wiki.processed_text_path(42),
+            PathBuf::from("/wikis/test/processed/42.txt")
+        );
+    }
+
+    #[test]
+    fn test_register_wiki_overwrites() {
+        let mut config = AppConfig::default();
+        config.register_wiki("rust".to_string(), PathBuf::from("/old/path"));
+        config.register_wiki("rust".to_string(), PathBuf::from("/new/path"));
+        assert_eq!(config.wikis["rust"].root, PathBuf::from("/new/path"));
     }
 }
