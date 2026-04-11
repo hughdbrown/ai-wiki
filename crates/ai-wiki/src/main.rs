@@ -29,6 +29,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize a new ai-wiki project in the current directory
+    #[command(
+        long_about = "Creates the directory structure and config file needed to run ai-wiki.\n\
+                      Run this once in an empty directory to set up a new wiki project.\n\n\
+                      Creates:\n  \
+                      - ai-wiki.toml     — configuration file with absolute paths\n  \
+                      - wiki/            — Obsidian vault (entities/, concepts/, claims/, sources/)\n  \
+                      - wiki/index.md    — page catalog\n  \
+                      - wiki/log.md      — ingestion log\n  \
+                      - wiki/CLAUDE.md   — LLM wiki schema\n  \
+                      - processed/       — extracted text from source files\n  \
+                      - raw/             — split PDFs and extracted archives\n  \
+                      - ai-wiki.db       — SQLite queue database\n\n\
+                      After init, you can ingest files and process them:\n  \
+                      ai-wiki ingest ~/Downloads/*.pdf\n  \
+                      ai-wiki process"
+    )]
+    Init,
+
     /// Ingest source files into the processing queue
     #[command(
         long_about = "Reads source files, classifies them by type, extracts text, and adds them\n\
@@ -132,6 +151,11 @@ enum QueueCommands {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Init runs before config loading — it creates the config
+    if matches!(cli.command, Commands::Init) {
+        return init(&cli.config);
+    }
+
     let config = if cli.config.exists() {
         ai_wiki_core::config::Config::load(&cli.config)?
     } else {
@@ -143,11 +167,11 @@ fn main() -> anyhow::Result<()> {
     config.validate()?;
 
     match cli.command {
+        Commands::Init => unreachable!(),
         Commands::Ingest { path } => ingest::run(&config, &path),
         Commands::Tui => tui::run(&config),
         Commands::Process => process::run(&config, &cli.config),
         Commands::Retry => retry(&config, &cli.config),
-
         Commands::Clear => clear(&config),
         Commands::Queue(cmd) => queue_cmd(&config, cmd),
     }
@@ -204,6 +228,64 @@ fn clear(config: &ai_wiki_core::config::Config) -> anyhow::Result<()> {
     }
     println!("You can now re-ingest the original files:");
     println!("  ai-wiki ingest <path>");
+
+    Ok(())
+}
+
+fn init(config_path: &Path) -> anyhow::Result<()> {
+    use ai_wiki_core::config::Config;
+    use ai_wiki_core::queue::Queue;
+    use ai_wiki_core::wiki::Wiki;
+
+    let cwd = std::env::current_dir()?;
+
+    if config_path.exists() {
+        anyhow::bail!(
+            "Config file already exists: {}\nThis directory appears to be already initialized.",
+            config_path.display()
+        );
+    }
+
+    // Build config with absolute paths rooted in the current directory
+    let mut config = Config::default();
+    config.paths.raw_dir = cwd.join("raw");
+    config.paths.wiki_dir = cwd.join("wiki");
+    config.paths.database_path = cwd.join("ai-wiki.db");
+    config.paths.processed_dir = cwd.join("processed");
+
+    // Create directories
+    std::fs::create_dir_all(&config.paths.raw_dir)?;
+    std::fs::create_dir_all(&config.paths.processed_dir)?;
+    println!("Created raw/");
+    println!("Created processed/");
+
+    // Initialize the wiki (creates entities/, concepts/, claims/, sources/, index.md, log.md, CLAUDE.md)
+    let wiki = Wiki::new(config.paths.wiki_dir.clone());
+    wiki.init()?;
+    println!("Created wiki/");
+    println!("  wiki/entities/");
+    println!("  wiki/concepts/");
+    println!("  wiki/claims/");
+    println!("  wiki/sources/");
+    println!("  wiki/index.md");
+    println!("  wiki/log.md");
+    println!("  wiki/CLAUDE.md");
+
+    // Create the SQLite database (creates tables and indexes)
+    let _queue = Queue::open(&config.paths.database_path)?;
+    println!("Created ai-wiki.db");
+
+    // Save the config file
+    config.save(config_path)?;
+    println!("Created {}", config_path.display());
+
+    println!();
+    println!("Initialized ai-wiki project in {}", cwd.display());
+    println!();
+    println!("Next steps:");
+    println!("  ai-wiki ingest ~/Downloads/*.pdf   # queue files for processing");
+    println!("  ai-wiki process                    # invoke Claude to build wiki pages");
+    println!("  ai-wiki tui                        # monitor queue status");
 
     Ok(())
 }
