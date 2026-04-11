@@ -144,8 +144,10 @@ impl AppConfig {
 
             // Restrict config directory to owner-only access.
             // Note: there is a brief TOCTOU window between create_dir_all and
-            // set_permissions, but the real protection is the 0o600 mode on the
-            // file itself (set atomically via OpenOptionsExt::mode below).
+            // set_permissions. The file itself is also protected via fchmod on
+            // the open fd below, so directory permissions are defence-in-depth.
+            // This assumes the config directory is owner-controlled (e.g. under
+            // the user's home directory).
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
