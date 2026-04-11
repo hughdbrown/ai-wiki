@@ -168,6 +168,7 @@ impl AppConfig {
         {
             use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;
+            use std::os::unix::fs::PermissionsExt;
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -176,6 +177,17 @@ impl AppConfig {
                 .open(path)
                 .map_err(|e| {
                     anyhow::anyhow!("failed to open config file {}: {}", path.display(), e)
+                })?;
+            // Also set permissions on the open fd to cover the case where the
+            // file already existed with overly permissive permissions.
+            // Operating on the fd (not the path) avoids a TOCTOU race.
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to set permissions on config file {}: {}",
+                        path.display(),
+                        e
+                    )
                 })?;
             f.write_all(content.as_bytes()).map_err(|e| {
                 anyhow::anyhow!("failed to write config file {}: {}", path.display(), e)
