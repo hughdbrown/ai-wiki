@@ -988,7 +988,7 @@ async fn main() -> Result<()> {
     }
 
     // Initialize wiki directory structures and reset in-progress items for each wiki.
-    // Pre-populate queue_cache so resolve_queue() reuses these connections.
+    // Pre-populate queue_cache for wikis with existing databases so resolve_queue() reuses these connections.
     let mut queue_cache = HashMap::new();
     for name in app_config.wikis.keys() {
         let wiki_config = app_config.resolve_wiki(name)?;
