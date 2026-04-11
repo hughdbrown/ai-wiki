@@ -155,20 +155,19 @@ pub fn split_pdf_chapters(
         }
 
         let output_path = output_dir.join(format!("{stem}_chapter_{:03}.pdf", i + 1));
-        let status = super::run_tool(
+        let output = super::run_tool_output(
             Command::new(&tools.qpdf_path)
                 .arg(path)
                 .arg("--pages")
                 .arg(".")
                 .arg(format!("{start}-{end}"))
                 .arg("--")
-                .arg(&output_path)
-                .stderr(std::process::Stdio::null()),
+                .arg(&output_path),
             "qpdf",
         )?;
 
         // qpdf exit codes: 0 = success, 3 = warnings (file still produced OK), 2 = errors
-        let exit_code = match status.code() {
+        let exit_code = match output.status.code() {
             Some(code) => code,
             None => {
                 return Err(anyhow::anyhow!(
@@ -180,12 +179,13 @@ pub fn split_pdf_chapters(
             }
         };
         if exit_code != 0 && exit_code != 3 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow::anyhow!(
-                "qpdf failed with exit code {} for chapter {} (pages {}-{})",
-                exit_code,
+                "qpdf failed for chapter {} (pages {}-{}): {}",
                 i + 1,
                 start,
-                end
+                end,
+                stderr.trim()
             ));
         }
         output_paths.push(output_path);
