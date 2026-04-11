@@ -139,22 +139,19 @@ impl WikiServer {
             .map_err(|e| format!("{e}"))?;
 
         let queue = {
+            use std::collections::hash_map::Entry;
             let mut cache = self
                 .queue_cache
                 .lock()
                 .map_err(|e| format!("queue cache lock poisoned: {e}"))?;
-            cache
-                .entry(wiki.to_string())
-                .or_insert_with(|| {
-                    // Open the queue once and cache it; panic on failure is acceptable
-                    // during cache population since it indicates a broken wiki config.
+            match cache.entry(wiki.to_string()) {
+                Entry::Occupied(e) => e.get().clone(),
+                Entry::Vacant(e) => {
                     let q = Queue::open(&wiki_config.database_path())
-                        .unwrap_or_else(|e| {
-                            panic!("Failed to open queue for wiki '{wiki}': {e}")
-                        });
-                    Arc::new(Mutex::new(q))
-                })
-                .clone()
+                        .map_err(|err| format!("Failed to open queue for wiki '{wiki}': {err}"))?;
+                    e.insert(Arc::new(Mutex::new(q))).clone()
+                }
+            }
         };
 
         Ok((wiki_config, queue))
@@ -990,7 +987,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Initialize wiki directory structures and reset in-progress items for each wiki
+    // Initialize wiki directory structures and reset in-progress items for each wiki.
+    // Pre-populate queue_cache so resolve_queue() reuses these connections.
+    let mut queue_cache = HashMap::new();
     for name in app_config.wikis.keys() {
         let wiki_config = app_config.resolve_wiki(name)?;
 
@@ -1006,12 +1005,13 @@ async fn main() -> Result<()> {
             if reset_count > 0 {
                 eprintln!("  [{name}] reset {reset_count} in-progress item(s) back to queued");
             }
+            queue_cache.insert(name.clone(), Arc::new(Mutex::new(queue)));
         }
     }
 
     let server = WikiServer {
         app_config: Arc::new(app_config),
-        queue_cache: Arc::new(Mutex::new(HashMap::new())),
+        queue_cache: Arc::new(Mutex::new(queue_cache)),
         tool_router: WikiServer::tool_router(),
     };
 
