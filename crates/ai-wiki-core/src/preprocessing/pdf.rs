@@ -36,16 +36,24 @@ where
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
 
-    let handle = std::thread::Builder::new()
+    // Never use `?` between set_hook and restore — early returns would
+    // permanently replace the panic hook with the silent no-op above.
+    let result = std::thread::Builder::new()
         .stack_size(PDF_THREAD_STACK_SIZE)
         .name("pdf-parse".into())
-        .spawn(move || std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)))
-        .map_err(|_| ())?;
+        // AssertUnwindSafe is acceptable: callers only capture owned PathBuf
+        // values, which are trivially unwind-safe.
+        .spawn(move || std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)));
 
-    let result = handle.join().map_err(|_| ())?.map_err(|_| ());
+    let result = match result {
+        Ok(handle) => match handle.join() {
+            Ok(Ok(val)) => Ok(val),
+            Ok(Err(_)) | Err(_) => Err(()),
+        },
+        Err(_) => Err(()),
+    };
 
     std::panic::set_hook(prev_hook);
-    drop(_guard);
     result
 }
 
