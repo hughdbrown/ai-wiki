@@ -192,7 +192,8 @@ pub fn split_pdf_chapters(
         if exit_code != 0 && exit_code != 3 {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow::anyhow!(
-                "qpdf failed for chapter {} (pages {}-{}): {}",
+                "qpdf failed (exit code {}) for chapter {} (pages {}-{}): {}",
+                exit_code,
                 i + 1,
                 start,
                 end,
