@@ -12,23 +12,38 @@ pub enum PdfClassification {
     Book { chapter_count: usize },
 }
 
-/// Run a closure with panics caught and the default panic hook suppressed.
-/// This prevents `catch_unwind` from spamming stderr with panic backtraces
-/// from buggy third-party PDF crates.
-fn catch_unwind_silent<F, R>(f: F) -> Result<R, ()>
+/// 16 MB stack for PDF parsing threads. lopdf/pdf-extract can recurse deeply
+/// on complex PDFs (deeply nested page trees, cross-reference chains) and
+/// overflow the default 8 MB main thread stack.
+const PDF_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+/// Run a closure on a dedicated thread with a large stack, catching panics
+/// silently. This handles both:
+/// - panics from buggy pdf-extract/lopdf code (caught by catch_unwind)
+/// - stack overflows on deeply nested PDFs (thread aborts but main survives)
+fn run_in_pdf_thread<F, R>(f: F) -> Result<R, ()>
 where
-    F: FnOnce() -> R + std::panic::UnwindSafe,
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
 {
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
-    let result = std::panic::catch_unwind(f).map_err(|_| ());
+
+    let handle = std::thread::Builder::new()
+        .stack_size(PDF_THREAD_STACK_SIZE)
+        .name("pdf-parse".into())
+        .spawn(move || std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)))
+        .map_err(|_| ())?;
+
+    let result = handle.join().map_err(|_| ())?.map_err(|_| ());
+
     std::panic::set_hook(prev_hook);
     result
 }
 
 pub fn classify_pdf(path: &Path) -> anyhow::Result<PdfClassification> {
     let path_owned = path.to_path_buf();
-    let result = catch_unwind_silent(|| -> anyhow::Result<PdfClassification> {
+    let result = run_in_pdf_thread(move || -> anyhow::Result<PdfClassification> {
         let doc = Document::load(&path_owned)
             .with_context(|| format!("failed to load PDF: {}", path_owned.display()))?;
 
@@ -64,7 +79,7 @@ pub fn split_pdf_chapters(
 ) -> anyhow::Result<Vec<PathBuf>> {
     let (total_pages, page_starts) = {
         let path_owned = path.to_path_buf();
-        let result = catch_unwind_silent(|| -> anyhow::Result<(u32, Vec<u32>)> {
+        let result = run_in_pdf_thread(move || -> anyhow::Result<(u32, Vec<u32>)> {
             let doc = Document::load(&path_owned).with_context(|| {
                 format!("failed to load PDF: {}", path_owned.display())
             })?;
@@ -157,7 +172,7 @@ pub fn extract_pdf_text(path: &Path, tools: &ToolsConfig) -> anyhow::Result<Stri
     // on malformed PDFs (e.g., cff-parser-0.1.0/src/encoding.rs:150).
     let pdf_extract_result = {
         let path_owned = path.to_path_buf();
-        catch_unwind_silent(|| pdf_extract::extract_text(&path_owned))
+        run_in_pdf_thread(move || pdf_extract::extract_text(&path_owned))
     };
     match pdf_extract_result {
         Ok(Ok(text)) if !text.trim().is_empty() => return Ok(text),
