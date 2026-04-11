@@ -14,8 +14,10 @@ use anyhow::Context;
 use ai_wiki_core::config::Config;
 use ai_wiki_core::queue::{ItemStatus, Queue, QueueItem};
 
-/// Upper bound on detail-view scroll offset. Prevents unbounded scrolling
-/// when exact content length is not tracked. 500 lines covers typical detail views.
+/// Upper bound for detail-view scrolling. Content length is computed at
+/// render time inside `draw_detail`, so the input loop cannot know the
+/// exact max. 500 lines is generous enough for any realistic detail view
+/// while preventing the user from scrolling into infinite blank space.
 const MAX_DETAIL_SCROLL: u16 = 500;
 
 pub fn run(config: &Config) -> anyhow::Result<()> {
