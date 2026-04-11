@@ -187,7 +187,8 @@ fn main() -> anyhow::Result<()> {
                     // CLI flag overrides config
                     let cfg = &app_config.process;
                     let effective_auth = auth
-                        .or_else(|| cfg.auth.clone())
+                        .as_deref()
+                        .or(cfg.auth.as_deref())
                         .ok_or_else(|| anyhow::anyhow!(
                             "No auth method specified.\n\
                              Set [process].auth in ~/.ai-wiki/config.toml (\"pro\" or \"api\"),\n\
@@ -235,9 +236,9 @@ fn retry(wiki: &WikiConfig, process_cfg: &ai_wiki_core::config::ProcessConfig) -
         println!("Running process to build wiki pages...");
         println!();
         let auth = process_cfg.auth.as_deref().ok_or_else(|| anyhow::anyhow!(
-                "No auth method specified.\n\
-                 Set [process].auth in ~/.ai-wiki/config.toml (\"pro\" or \"api\")."
-            ))?;
+            "No auth method specified.\n\
+             Set [process].auth in ~/.ai-wiki/config.toml (\"pro\" or \"api\")."
+        ))?;
         let opts = process::ProcessOptions {
             use_api_key: auth == "api",
             model: process_cfg.model.clone(),
