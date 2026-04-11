@@ -109,10 +109,11 @@ enum Commands {
     )]
     Process {
         /// Authentication method for Claude CLI sessions.
-        /// "pro" uses your Claude Code Pro subscription (default).
+        /// "pro" uses your Claude Code Pro subscription.
         /// "api" uses the ANTHROPIC_API_KEY environment variable.
-        #[arg(long, default_value = "pro", value_parser = ["pro", "api"])]
-        auth: String,
+        /// Falls back to [process].auth in config.toml. Required if not in config.
+        #[arg(long, value_parser = ["pro", "api"])]
+        auth: Option<String>,
 
         /// Model to use (e.g., "sonnet", "opus", "claude-sonnet-4-6")
         #[arg(long)]
@@ -183,9 +184,15 @@ fn main() -> anyhow::Result<()> {
                 Commands::Ingest { path } => ingest::run(&app_config.tools, &wiki, &path),
                 Commands::Tui => tui::run(&wiki),
                 Commands::Process { auth, model } => {
-                    // CLI args override config; config provides defaults
+                    // CLI flag overrides config
                     let cfg = &app_config.process;
-                    let effective_auth = if auth != "pro" { &auth } else { &cfg.auth };
+                    let effective_auth = auth
+                        .or_else(|| cfg.auth.clone())
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "No auth method specified.\n\
+                             Set [process].auth in ~/.ai-wiki/config.toml (\"pro\" or \"api\"),\n\
+                             or pass --auth on the command line."
+                        ))?;
                     let effective_model = model.or_else(|| cfg.model.clone());
                     let opts = process::ProcessOptions {
                         use_api_key: effective_auth == "api",
@@ -227,8 +234,12 @@ fn retry(wiki: &WikiConfig, process_cfg: &ai_wiki_core::config::ProcessConfig) -
     if retried > 0 {
         println!("Running process to build wiki pages...");
         println!();
-        let opts = process::ProcessOptions {
-                use_api_key: process_cfg.auth == "api",
+        let auth = process_cfg.auth.as_deref().ok_or_else(|| anyhow::anyhow!(
+                "No auth method specified.\n\
+                 Set [process].auth in ~/.ai-wiki/config.toml (\"pro\" or \"api\")."
+            ))?;
+            let opts = process::ProcessOptions {
+                use_api_key: auth == "api",
                 model: process_cfg.model.clone(),
             };
             process::run(wiki, &opts)?;

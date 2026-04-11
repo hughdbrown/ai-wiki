@@ -166,29 +166,22 @@ Each queued item gets its own fresh Claude session with a two-pass prompt:
 
 Book parents (PDFs with chapters) have all their children's text gathered and processed in a single session.
 
-**Authentication:** By default, `process` uses your Claude Code Pro subscription. To use an API key instead:
-
-```bash
-ai-wiki process --auth api     # uses ANTHROPIC_API_KEY
-ai-wiki process --auth pro     # uses Pro subscription (default)
-```
-
-**Model selection:**
-
-```bash
-ai-wiki process --model opus
-ai-wiki process --model sonnet
-```
-
-Both `auth` and `model` can be set as defaults in `~/.ai-wiki/config.toml`:
+**Authentication** must be configured before processing. Set it in `~/.ai-wiki/config.toml`:
 
 ```toml
 [process]
-auth = "pro"
-model = "sonnet"
+auth = "pro"       # "pro" = Claude Code Pro subscription, "api" = ANTHROPIC_API_KEY
+model = "sonnet"   # optional model override
 ```
 
-CLI flags override the config.
+Or pass per invocation (CLI flags override config):
+
+```bash
+ai-wiki process --auth pro
+ai-wiki process --auth api --model opus
+```
+
+If neither config nor CLI specifies auth, the command will error rather than silently picking a subscription.
 
 > **Security note:** The `process` command grants Claude broad tool access. Only process documents you trust.
 

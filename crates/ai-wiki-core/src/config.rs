@@ -14,28 +14,13 @@ pub struct AppConfig {
 }
 
 /// Settings for the `process` command (Claude invocation).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProcessConfig {
     /// "pro" for Claude Code Pro subscription, "api" for ANTHROPIC_API_KEY.
-    #[serde(default = "ProcessConfig::default_auth")]
-    pub auth: String,
+    /// Must be set explicitly in config or via --auth flag.
+    pub auth: Option<String>,
     /// Optional model override (e.g., "sonnet", "opus", "claude-sonnet-4-6").
     pub model: Option<String>,
-}
-
-impl Default for ProcessConfig {
-    fn default() -> Self {
-        Self {
-            auth: "pro".to_string(),
-            model: None,
-        }
-    }
-}
-
-impl ProcessConfig {
-    fn default_auth() -> String {
-        "pro".to_string()
-    }
 }
 
 /// Per-wiki config entry -- just a root directory
