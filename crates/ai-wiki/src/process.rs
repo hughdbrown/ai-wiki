@@ -247,33 +247,51 @@ fn run_claude_session(prompt: &str, opts: &ProcessOptions) -> anyhow::Result<()>
     Ok(())
 }
 
+/// Maximum total text size (in bytes) to embed directly in the prompt.
+/// Above this, provide file paths and let Claude read them to avoid
+/// exhausting the context window. 500KB ≈ 125K tokens, leaving plenty
+/// of room for instructions and output.
+const MAX_EMBED_SIZE: usize = 500_000;
+
 fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, texts: &[(i64, String)], file_name: &str) -> String {
     let wiki_dir = wiki.wiki_dir().display().to_string();
     let wiki_name = &wiki.name;
     let today = chrono::Utc::now().format("%Y-%m-%d");
     let item_id = item.id;
+    let processed_dir = wiki.processed_dir().display().to_string();
 
     let is_book = texts.len() > 1
         || (item.parent_id.is_none() && texts.iter().any(|(id, _)| *id != item.id));
 
-    // Embed source text directly in the prompt to avoid file-read tool calls.
-    let embedded_text: String = texts
-        .iter()
-        .enumerate()
-        .map(|(i, (id, content))| {
-            // Truncate very large chapters to stay within reasonable prompt size.
-            let truncated = if content.len() > 200_000 {
-                format!("{}...\n[truncated — {} bytes total]", &content[..200_000], content.len())
-            } else {
-                content.clone()
-            };
+    let total_text_size: usize = texts.iter().map(|(_, c)| c.len()).sum();
+
+    // Embed text directly when small enough; otherwise provide file paths.
+    let (source_text_section, needs_file_reads) = if total_text_size <= MAX_EMBED_SIZE {
+        let embedded: String = texts
+            .iter()
+            .enumerate()
+            .map(|(i, (id, content))| {
+                format!("### Part {} (ID {id})\n\n{content}", i + 1)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n");
+        (embedded, false)
+    } else {
+        let file_list: String = texts
+            .iter()
+            .map(|(id, _)| format!("  - `{processed_dir}/{id}.txt`"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        (
             format!(
-                "### Part {} (ID {id})\n\n{truncated}",
-                i + 1,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n");
+                "**Note:** Source text is too large to include inline ({:.1}MB, {} parts).\n\
+                 Read these files to get the source text:\n{file_list}",
+                total_text_size as f64 / 1_000_000.0,
+                texts.len(),
+            ),
+            true,
+        )
+    };
 
     // Build list of children IDs for the mark-complete step
     let child_ids: Vec<i64> = texts
@@ -299,8 +317,12 @@ fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, texts: &[(i64, String)
         )
     };
 
-    let book_hint = if is_book {
+    let book_hint = if is_book && needs_file_reads {
+        "This is a **book with multiple chapters**. Read all the files listed below."
+    } else if is_book {
         "This is a **book with multiple chapters**. The full text is provided below."
+    } else if needs_file_reads {
+        "This is a single document. Read the file listed below."
     } else {
         "This is a single document. The full text is provided below."
     };
@@ -318,11 +340,11 @@ fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, texts: &[(i64, String)
 
 ## Source Text
 
-{embedded_text}
+{source_text_section}
 
 ## Pass 1: Source Summary
 
-Create a source summary page from the text above.
+Create a source summary page from the source text.
 
 1. **Create `{wiki_dir}/sources/<slug>.md`** with:
    - YAML frontmatter: type, tags, sources, created, updated
@@ -397,7 +419,7 @@ Now extract knowledge from the source text into dedicated pages.
         wiki_dir = wiki_dir,
         file_name = file_name,
         item_id = item_id,
-        embedded_text = embedded_text,
+        source_text_section = source_text_section,
         book_hint = book_hint,
         today = today,
         mark_children_complete = mark_children_complete,
