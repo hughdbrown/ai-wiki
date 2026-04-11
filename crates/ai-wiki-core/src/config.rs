@@ -152,21 +152,30 @@ impl AppConfig {
         }
         let content = toml::to_string_pretty(self)
             .map_err(|e| anyhow::anyhow!("failed to serialize config: {}", e))?;
-        std::fs::write(path, content).map_err(|e| {
-            anyhow::anyhow!("failed to write config file {}: {}", path.display(), e)
-        })?;
-
-        // Config may contain auth preferences — restrict to owner-only.
+        // Config may contain auth preferences — set owner-only permissions
+        // atomically at creation to avoid a TOCTOU window where the file is
+        // briefly world-readable.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(path, perms).map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to set permissions on config file {}: {}",
-                    path.display(),
-                    e
-                )
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to open config file {}: {}", path.display(), e)
+                })?;
+            f.write_all(content.as_bytes()).map_err(|e| {
+                anyhow::anyhow!("failed to write config file {}: {}", path.display(), e)
+            })?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, &content).map_err(|e| {
+                anyhow::anyhow!("failed to write config file {}: {}", path.display(), e)
             })?;
         }
 
