@@ -302,10 +302,15 @@ fn init(name: Option<String>, directory: Option<PathBuf>) -> anyhow::Result<()> 
     // Resolve whisper_model_path to absolute relative to the config file's directory
     // (e.g. ~/.ai-wiki/), not the wiki root — the model is a global tool resource.
     if app_config.tools.whisper_model_path.is_relative() {
-        let config_dir = AppConfig::config_path()?
+        let config_path = AppConfig::config_path()?;
+        let config_dir = config_path
             .parent()
+            .filter(|p| !p.as_os_str().is_empty())
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .ok_or_else(|| anyhow::anyhow!(
+                "config path '{}' has no parent directory",
+                config_path.display()
+            ))?;
         app_config.tools.whisper_model_path =
             config_dir.join(&app_config.tools.whisper_model_path);
     }
