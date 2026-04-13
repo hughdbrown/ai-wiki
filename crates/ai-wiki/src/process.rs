@@ -279,7 +279,10 @@ fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, texts: &[(i64, String)
     let total_text_size: usize = texts.iter().map(|(_, c)| c.len()).sum();
 
     // Embed text directly when small enough; otherwise provide file paths.
-    let (source_text_section, needs_file_reads) = if total_text_size <= MAX_EMBED_SIZE {
+    // When gather_text detects oversized input it returns empty strings,
+    // so also fall back to file paths when entries exist but contain no text.
+    let has_inline_content = !texts.is_empty() && texts.iter().any(|(_, c)| !c.is_empty());
+    let (source_text_section, needs_file_reads) = if has_inline_content && total_text_size <= MAX_EMBED_SIZE {
         let embedded: String = texts
             .iter()
             .enumerate()
@@ -541,6 +544,39 @@ mod tests {
         assert!(prompt.contains(&expected_path_12), "prompt should list processed path for id 12");
         assert!(!prompt.contains(&big_text), "prompt should not embed the large text inline");
         assert!(prompt.contains("too large to include inline"));
+    }
+
+    #[test]
+    fn test_build_item_prompt_empty_strings_use_file_paths() {
+        let wiki = WikiConfig {
+            name: "test-wiki".to_string(),
+            root: PathBuf::from("/tmp/test-wiki"),
+        };
+        let item = QueueItem {
+            id: 10,
+            file_path: PathBuf::from("/tmp/book.pdf"),
+            file_type: ai_wiki_core::queue::FileType::Pdf,
+            status: ItemStatus::InProgress,
+            parent_id: None,
+            wiki_page_path: None,
+            error_message: None,
+            created_at: chrono::Utc::now(),
+            started_at: Some(chrono::Utc::now()),
+            completed_at: None,
+        };
+        // Simulate what gather_text returns for oversized input: entries with empty strings
+        let texts = vec![
+            (11, String::new()),
+            (12, String::new()),
+        ];
+        let prompt = build_item_prompt(&wiki, &item, &texts, "book.pdf");
+
+        let expected_path_11 = wiki.processed_text_path(11).display().to_string();
+        let expected_path_12 = wiki.processed_text_path(12).display().to_string();
+        assert!(prompt.contains(&expected_path_11), "prompt should list processed path for id 11");
+        assert!(prompt.contains(&expected_path_12), "prompt should list processed path for id 12");
+        assert!(prompt.contains("too large to include inline"), "prompt should indicate file-path fallback");
+        assert!(prompt.contains("Read these files"), "prompt should instruct Claude to read files");
     }
 
     #[test]
