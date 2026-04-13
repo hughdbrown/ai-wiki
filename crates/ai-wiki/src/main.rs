@@ -128,7 +128,18 @@ enum Commands {
                       failed (e.g., Claude timeout, network error). Items without processed text\n\
                       are left as errors — use 'clear' to remove them, then re-ingest."
     )]
-    Retry,
+    Retry {
+        /// Authentication method for Claude CLI sessions.
+        /// "pro" uses your Claude Code Pro subscription.
+        /// "api" uses the ANTHROPIC_API_KEY environment variable.
+        /// Falls back to [process].auth in config.toml. Required if not in config.
+        #[arg(long, value_parser = ["pro", "api"])]
+        auth: Option<String>,
+
+        /// Model to use (e.g., "sonnet", "opus", "claude-sonnet-4-6")
+        #[arg(long)]
+        model: Option<String>,
+    },
 
     /// Remove all errored items from the queue
     #[command(
@@ -201,7 +212,7 @@ fn main() -> anyhow::Result<()> {
                     };
                     process::run(&wiki, &opts)
                 }
-                Commands::Retry => retry(&wiki, &app_config.process),
+                Commands::Retry { auth, model } => retry(&wiki, &app_config.process, auth.as_deref(), model),
                 Commands::Clear => clear(&wiki),
                 Commands::Queue(cmd) => queue_cmd(&wiki, cmd),
                 Commands::Init { .. } | Commands::List => unreachable!(),
@@ -210,7 +221,12 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn retry(wiki: &WikiConfig, process_cfg: &ai_wiki_core::config::ProcessConfig) -> anyhow::Result<()> {
+fn retry(
+    wiki: &WikiConfig,
+    cfg: &ai_wiki_core::config::ProcessConfig,
+    cli_auth: Option<&str>,
+    cli_model: Option<String>,
+) -> anyhow::Result<()> {
     let queue = ai_wiki_core::queue::Queue::open(&wiki.database_path())?;
 
     let error_items = queue.list_items(Some(&ai_wiki_core::queue::ItemStatus::Error))?;
@@ -235,13 +251,17 @@ fn retry(wiki: &WikiConfig, process_cfg: &ai_wiki_core::config::ProcessConfig) -
     if retried > 0 {
         println!("Running process to build wiki pages...");
         println!();
-        let auth = process_cfg.auth.as_deref().ok_or_else(|| anyhow::anyhow!(
-            "No auth method specified.\n\
-             Set [process].auth in ~/.ai-wiki/config.toml (\"pro\" or \"api\")."
-        ))?;
+        let effective_auth = cli_auth
+            .or(cfg.auth.as_deref())
+            .ok_or_else(|| anyhow::anyhow!(
+                "No auth method specified.\n\
+                 Set [process].auth in ~/.ai-wiki/config.toml (\"pro\" or \"api\"),\n\
+                 or pass --auth on the command line."
+            ))?;
+        let effective_model = cli_model.or_else(|| cfg.model.clone());
         let opts = process::ProcessOptions {
-            use_api_key: auth == "api",
-            model: process_cfg.model.clone(),
+            use_api_key: effective_auth == "api",
+            model: effective_model,
         };
         process::run(wiki, &opts)?;
     }

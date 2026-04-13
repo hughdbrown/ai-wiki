@@ -166,41 +166,56 @@ fn claim_next_parent(queue: &Queue) -> anyhow::Result<Option<QueueItem>> {
     Ok(queue.claim_next_queued_parent()?)
 }
 
-/// Read the processed text for an item and its children.
-/// Returns (child_id, text_content) pairs. Reads files in Rust so the
-/// prompt can embed the text directly, eliminating file-read tool calls.
+/// Collect processed-text entries for an item and its children.
+/// Only reads file contents when total size is below MAX_EMBED_SIZE;
+/// otherwise returns entries with empty strings (the prompt builder
+/// will provide file paths instead).
 fn gather_text(
     item: &QueueItem,
     queue: &Queue,
     wiki: &WikiConfig,
 ) -> anyhow::Result<Vec<(i64, String)>> {
-    let mut texts = Vec::new();
+    let mut entries: Vec<(i64, std::path::PathBuf)> = Vec::new();
+    let mut total_size: u64 = 0;
 
-    // Check if this item has its own processed text
     let own_path = wiki.processed_text_path(item.id);
     if own_path.exists() {
-        let content = std::fs::read_to_string(&own_path)
-            .with_context(|| format!("failed to read {}", own_path.display()))?;
-        texts.push((item.id, content));
+        let size = std::fs::metadata(&own_path)
+            .with_context(|| format!("failed to stat {}", own_path.display()))?
+            .len();
+        total_size += size;
+        entries.push((item.id, own_path));
     }
 
-    // For book parents, also gather children's text
     let children = queue
         .children_of(item.id)
         .with_context(|| format!("failed to query children of item {}", item.id))?;
     for child in &children {
         if matches!(child.status, ItemStatus::Rejected) {
-            continue; // skip rejected front matter
+            continue;
         }
         let child_path = wiki.processed_text_path(child.id);
         if child_path.exists() {
-            let content = std::fs::read_to_string(&child_path)
-                .with_context(|| format!("failed to read {}", child_path.display()))?;
-            texts.push((child.id, content));
+            let size = std::fs::metadata(&child_path)
+                .with_context(|| format!("failed to stat {}", child_path.display()))?
+                .len();
+            total_size += size;
+            entries.push((child.id, child_path));
         }
     }
 
-    Ok(texts)
+    if total_size as usize <= MAX_EMBED_SIZE {
+        entries
+            .into_iter()
+            .map(|(id, path)| {
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                Ok((id, content))
+            })
+            .collect()
+    } else {
+        Ok(entries.into_iter().map(|(id, _)| (id, String::new())).collect())
+    }
 }
 
 /// Spawn a fresh Claude session with the given prompt.
