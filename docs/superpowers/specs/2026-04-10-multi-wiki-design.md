@@ -89,7 +89,7 @@ The `--config` flag is removed.
 
 Existing setups that used a per-project `ai-wiki.toml` must be migrated manually:
 
-1. **Create central config:** Run `ai-wiki init --name <name>` from the existing wiki root directory. This creates `~/.ai-wiki/config.toml` (if needed) and registers the wiki.
+1. **Create central config:** Run `ai-wiki init [--name <name>] [<directory>]` from the existing wiki root directory (or pass the directory explicitly). Name defaults to the directory name; directory defaults to CWD. This creates `~/.ai-wiki/config.toml` (if needed) and registers the wiki.
 2. **Verify paths:** The `init` command derives sub-paths (`wiki/`, `processed/`, `raw/`, `ai-wiki.db`) from the registered root. Existing directories at those paths are reused — no data is moved or copied.
 3. **Remove old config:** Delete the per-project `ai-wiki.toml` file. It is no longer read.
 4. **Removed fields:** The following config fields no longer exist and have no equivalent:
