@@ -281,8 +281,10 @@ fn build_item_prompt(wiki: &WikiConfig, item: &QueueItem, texts: &[(i64, String)
     // Embed text directly when small enough; otherwise provide file paths.
     // When gather_text detects oversized input it returns empty strings,
     // so also fall back to file paths when entries exist but contain no text.
-    let has_inline_content = !texts.is_empty() && texts.iter().any(|(_, c)| !c.is_empty());
-    let (source_text_section, needs_file_reads) = if has_inline_content && total_text_size <= MAX_EMBED_SIZE {
+    let has_inline_content = texts.iter().any(|(_, c)| !c.is_empty());
+    let (source_text_section, needs_file_reads) = if texts.is_empty() {
+        ("**Note:** No source text available.".to_string(), false)
+    } else if has_inline_content && total_text_size <= MAX_EMBED_SIZE {
         let embedded: String = texts
             .iter()
             .enumerate()
@@ -577,6 +579,7 @@ mod tests {
         assert!(prompt.contains(&expected_path_12), "prompt should list processed path for id 12");
         assert!(prompt.contains("too large to include inline"), "prompt should indicate file-path fallback");
         assert!(prompt.contains("Read these files"), "prompt should instruct Claude to read files");
+        assert!(!prompt.contains("### Part 1"), "prompt should not contain inline embed markers");
     }
 
     #[test]
