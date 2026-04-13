@@ -85,6 +85,35 @@ The `--config` flag is removed.
 - The server resolves the name to the wiki's root, database, etc.
 - Single server instance serves all wikis
 
+## Migration from Per-Project Config
+
+Existing setups that used a per-project `ai-wiki.toml` must be migrated manually:
+
+1. **Create central config:** Run `ai-wiki init --name <name>` from the existing wiki root directory. This creates `~/.ai-wiki/config.toml` (if needed) and registers the wiki.
+2. **Verify paths:** The `init` command derives sub-paths (`wiki/`, `processed/`, `raw/`, `ai-wiki.db`) from the registered root. Existing directories at those paths are reused — no data is moved or copied.
+3. **Remove old config:** Delete the per-project `ai-wiki.toml` file. It is no longer read.
+4. **Removed fields:** The following config fields no longer exist and have no equivalent:
+   - `book_min_pages` — any PDF with a level-1 TOC entry is now split
+   - `non_operative_extensions` — file type detection handles rejection
+   - `sensitive_filename_patterns` — removed entirely
+   - `PdfConfig` / `RejectionConfig` structs — removed
+
+If an old-style `ai-wiki.toml` is found in the working directory, the CLI ignores it. No automatic discovery or import is performed.
+
+## Overlapping and Nested Wiki Roots
+
+When CWD-based wiki resolution finds multiple matching roots (e.g., `/wikis/rust` and `/wikis/rust/embedded`), the **most specific (longest) root wins**. This is a simple prefix-length comparison on canonicalized paths.
+
+Symlinks: wiki roots are canonicalized (symlinks resolved) before comparison and before registration. Two roots that resolve to the same canonical path are rejected at `init` time as a duplicate.
+
+Edge cases:
+- A wiki root nested inside another wiki root is allowed but discouraged. The `--wiki` flag is the reliable way to disambiguate.
+- If CWD matches exactly one root, that root is used regardless of nesting.
+
+## Security: Process Trust Model
+
+The `process` command grants Claude broad tool access via `--dangerously-skip-permissions`. This means Claude can read and write files within the wiki root without confirmation. Only process documents you trust. The process command validates that config paths contain only safe characters before embedding them in the Claude prompt.
+
 ## Implementation Notes
 
 - The `Config` struct splits into `AppConfig` (global) containing `ToolsConfig` and a `HashMap<String, WikiConfig>`

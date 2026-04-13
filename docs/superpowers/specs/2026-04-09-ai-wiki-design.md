@@ -1,5 +1,12 @@
 # AI Wiki — Design Specification
 
+> **Status: Superseded** (2026-04-09, single-wiki model)
+>
+> This spec describes the original single-wiki architecture. It has been superseded by
+> `2026-04-10-multi-wiki-design.md`, which replaces per-project config with a central
+> `~/.ai-wiki/config.toml` and adds multi-wiki support. This document is retained as
+> historical context — see `../../README.md` (docs) for the authority hierarchy.
+
 ## Overview
 
 A Rust application that preprocesses source files (PDFs, markdown, text, ZIPs, audio/video) and exposes an MCP server for Claude Code to drive LLM-powered wiki generation. The wiki is an Obsidian-native vault of interlinked markdown pages that compounds knowledge over time.

@@ -1,5 +1,11 @@
 # Code Review Findings — Aggregated
 
+> **Status: Historical / Non-normative** (snapshot from 2026-04-09)
+>
+> These findings are a point-in-time record from two review rounds. They are not open requirements.
+> Some issues have been fixed in subsequent commits; others may no longer apply after the multi-wiki
+> redesign. Check the current code before treating any finding as actionable.
+
 Two rounds of review by 5+3 agents. Findings deduplicated and prioritized.
 
 ## Critical (4 issues)

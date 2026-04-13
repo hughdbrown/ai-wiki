@@ -1,16 +1,30 @@
 # Application
 
+> **Authority note:** This document describes the current multi-wiki architecture.
+> For the canonical config/resolution spec, see `../superpowers/specs/2026-04-10-multi-wiki-design.md`.
+> For the doc hierarchy, see `../README.md` (docs).
+
 The application suite is a Cargo workspace with four crates. A single `ai-wiki` CLI binary handles all user-facing operations via subcommands.
 
 ## CLI: `ai-wiki`
 
 ```
-ai-wiki [--config <path>] <command>
+ai-wiki [--wiki <name>] <command>
 ```
 
-The `--config` flag (default: `ai-wiki.toml`) points to the TOML config file. On first run, a default config is created automatically.
+Wiki selection: if `--wiki <name>` is given, that named wiki is used. Otherwise the CLI checks whether the current working directory is at or under a registered wiki root. If neither matches, available wikis are listed and the command exits with an error.
 
-### `ai-wiki ingest <path>`
+Configuration is stored centrally at `~/.ai-wiki/config.toml`. See the multi-wiki spec for details.
+
+### `ai-wiki init [--name <name>] [<directory>]`
+
+Creates a new wiki directory structure and registers it in `~/.ai-wiki/config.toml`. Name defaults to the directory name; directory defaults to CWD. Creates the config file if it doesn't exist.
+
+### `ai-wiki list`
+
+Lists all registered wikis with name, root path, and queue counts.
+
+### `ai-wiki ingest [--wiki <name>] <path>`
 
 Reads source files, classifies them by type, extracts text, and adds items to the processing queue. No LLM is involved — this is pure Rust preprocessing.
 
@@ -21,11 +35,11 @@ The `<path>` argument accepts:
 4. **File list**: `ai-wiki ingest @my-reading-list.txt` — reads one path per line; `#` comments and blank lines are skipped; leading/trailing quotes on each path are stripped
 
 Supported file types:
-- PDF: text extracted via pdf-extract, pdftotext, or OCR. Books (with outlines and 50+ pages) are split into chapters automatically.
+- PDF: text extracted via pdf-extract, pdftotext, or OCR. Books with a table of contents are split into chapters automatically.
 - Markdown/Text: copied directly to the processed directory.
 - ZIP: extracted and each contained file processed recursively.
 - Audio/Video: audio extracted with ffmpeg, transcribed with whisper-cpp.
-- `.dmg` and other non-operative types: rejected immediately.
+- Unknown file types: rejected immediately.
 
 Duplicate files (same path + parent) are detected and skipped automatically.
 
@@ -36,7 +50,7 @@ Progress is shown per file, with a summary at the end:
 Ingest complete — queued: 500, rejected: 12, errors: 3, skipped: 279, failed: 0 (4m 23s)
 ```
 
-### `ai-wiki process`
+### `ai-wiki process [--wiki <name>]`
 
 Invokes the Claude CLI to process every queued item in the database. Claude reads each item's extracted text, identifies entities, concepts, and claims, creates wiki pages with YAML frontmatter and `[[wikilinks]]`, updates the index and log, and marks items complete.
 
@@ -44,7 +58,7 @@ Requires the `claude` CLI to be installed and on PATH. Runs with `--dangerously-
 
 Book parents (items with chapters) are summarized from their children's processed text.
 
-### `ai-wiki tui`
+### `ai-wiki tui [--wiki <name>]`
 
 Opens a terminal UI showing all queue items with color-coded status:
 - Gray: queued
@@ -59,13 +73,13 @@ Keyboard controls:
 - `r` — force refresh
 - `q`/`Esc` — quit
 
-### `ai-wiki retry`
+### `ai-wiki retry [--wiki <name>]`
 
 Requeues errored items that have extracted text in the processed directory, then runs `process` to have Claude build their wiki pages.
 
 This is for items where text extraction succeeded but wiki page creation failed (e.g., Claude timeout, network error). Items without processed text are left as errors — use `clear` to remove them, then re-ingest.
 
-### `ai-wiki clear`
+### `ai-wiki clear [--wiki <name>]`
 
 Deletes all items with `error` status from the queue database. Use this to clean up items that failed text extraction and cannot be retried without re-ingesting the original files. Also deletes errored child items of errored parents.
 
@@ -77,7 +91,7 @@ ai-wiki ingest ~/Downloads/*.pdf
 
 The dedup check skips files that were already successfully processed and only picks up previously failed ones.
 
-### `ai-wiki queue <subcommand>`
+### `ai-wiki queue [--wiki <name>] <subcommand>`
 
 Low-level queue operations used by the Claude process prompt. Not typically called by users directly.
 
@@ -122,30 +136,30 @@ Useful for understanding why a particular PDF was or was not split, or for diagn
 
 ## MCP Server: `ai-wiki-mcp`
 
-Long-running process connected to Claude Code via `claude mcp add`. Exposes 11 MCP tools for LLM-driven wiki building without the subprocess approach.
+Long-running process connected to Claude Code via `claude mcp add`. Reads `~/.ai-wiki/config.toml` on startup and serves all registered wikis. Every tool requires a `wiki` parameter (the registered wiki name) to identify which wiki to operate on.
 
 ### Queue Tools
-- `get_next_item` — claim the next queued item (marks it `in_progress`), returns JSON
-- `complete_item(id, wiki_page_path)` — mark item complete; returns whether all siblings are done
-- `reject_item(id, reason)` — mark item rejected
-- `error_item(id, message)` — mark item errored
-- `list_items(status?)` — list queue items, optionally filtered by status
+- `get_next_item(wiki)` — claim the next queued item (marks it `in_progress`), returns JSON
+- `complete_item(wiki, id, wiki_page_path)` — mark item complete; returns whether all siblings are done
+- `reject_item(wiki, id, reason)` — mark item rejected
+- `error_item(wiki, id, message)` — mark item errored
+- `list_items(wiki, status?)` — list queue items, optionally filtered by status
 
 ### Source Tools
-- `read_source(id)` — read preprocessed text from `processed/<id>.txt`
+- `read_source(wiki, id)` — read preprocessed text from `processed/<id>.txt`
 
 ### Wiki Tools
-- `read_page(path)` — read a wiki page by relative path
-- `write_page(path, content)` — create or overwrite a wiki page
-- `list_pages(directory?)` — list pages, optionally within a subdirectory
-- `read_index` — read current `index.md`
-- `update_index(entry)` — append an entry to `index.md`
-- `append_log(entry)` — append a timestamped entry to `log.md`
+- `read_page(wiki, path)` — read a wiki page by relative path
+- `write_page(wiki, path, content)` — create or overwrite a wiki page
+- `list_pages(wiki, directory?)` — list pages, optionally within a subdirectory
+- `read_index(wiki)` — read current `index.md`
+- `update_index(wiki, entry)` — append an entry to `index.md`
+- `append_log(wiki, entry)` — append a timestamped entry to `log.md`
 
 ## Library: `ai-wiki-core`
 
 Shared library crate providing:
-- `config` — TOML config loading/saving, validation, path helpers
+- `config` — central TOML config loading/saving (`~/.ai-wiki/config.toml`), validation, per-wiki path helpers
 - `queue` — SQLite-backed job queue with WAL mode, atomic claim, status transitions
 - `preprocessing` — file type detection, PDF classification/splitting/extraction, ZIP extraction, audio/video transcription
 - `wiki` — wiki file read/write operations, index and log management
@@ -153,18 +167,24 @@ Shared library crate providing:
 ## Workspace Structure
 
 ```
-ai-wiki/
+ai-wiki/                          # Source repository
 ├── crates/
-│   ├── ai-wiki-core/     # Library: config, queue, preprocessing, wiki operations
-│   ├── ai-wiki/          # CLI binary: ingest, tui, process, retry, clear, queue
-│   ├── ai-wiki-mcp/      # MCP server: 11 tools for Claude Code integration
-│   └── pdf-dump/         # Diagnostic utility for PDF inspection
+│   ├── ai-wiki-core/             # Library: config, queue, preprocessing, wiki
+│   ├── ai-wiki/                  # CLI: init, ingest, process, tui, retry, clear, list, queue
+│   ├── ai-wiki-mcp/              # MCP server: multi-wiki, all tools require wiki param
+│   └── pdf-dump/                 # Diagnostic utility for PDF inspection
 ├── docs/
-│   ├── design/           # Design documents
-│   └── superpowers/      # Implementation plans and review findings
-├── wiki/                 # Generated Obsidian vault
-├── processed/            # Extracted text files
-├── raw/                  # Split PDFs and extracted ZIPs
-├── ai-wiki.toml          # Configuration
-└── justfile              # Task runner recipes
+│   ├── design/                   # Architecture and workflow docs
+│   ├── superpowers/              # Specs, plans, review findings
+│   └── archive/                  # Raw session transcripts (non-authoritative)
+└── justfile                      # Task runner recipes
+
+~/.ai-wiki/
+└── config.toml                   # Central config: tool paths + wiki registry
+
+~/wikis/<name>/                   # Each registered wiki root
+├── wiki/                         # Obsidian vault
+├── processed/                    # Extracted text files
+├── raw/                          # Split PDFs and extracted ZIPs
+└── ai-wiki.db                    # SQLite queue database
 ```

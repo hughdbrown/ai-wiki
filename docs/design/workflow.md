@@ -1,6 +1,10 @@
 # Workflow
 
-The ai-wiki application has two phases: **ingest** (pure Rust preprocessing) and **process** (LLM-driven wiki building). No LLM is involved in the ingest phase.
+> **Authority note:** This document describes the ingest/process workflow.
+> For config and wiki resolution, see `../superpowers/specs/2026-04-10-multi-wiki-design.md`.
+> For the doc hierarchy, see `../README.md` (docs).
+
+The ai-wiki application has two phases: **ingest** (pure Rust preprocessing) and **process** (LLM-driven wiki building). No LLM is involved in the ingest phase. Both phases operate on a single resolved wiki — see the multi-wiki spec for how the target wiki is selected.
 
 ## Phase 1: Ingest
 
@@ -9,7 +13,7 @@ The ingest phase reads source files, classifies them by type, extracts text, and
 ### Responsibilities
 
 - Read source files (file, directory, glob pattern, or `@filelist`)
-- Classify each file by type (extension-based, with sensitive filename rejection)
+- Classify each file by type (extension-based)
 - Extract text from each file (or transcode audio/video to text)
 - Write extracted text to `processed/<id>.txt`
 - Enqueue each file in SQLite with its type, status, and parent linkage
@@ -30,9 +34,8 @@ PDF processing uses a three-stage extraction pipeline:
 3. `pdftoppm` + `tesseract` — OCR fallback. Renders PDF pages to PPM images, then runs tesseract on each.
 
 PDF classification (via `lopdf` + `get_toc()`):
-- **Book**: has a table of contents (outline) with at least one level-1 entry AND at least `book_min_pages` pages (default: 50). Split into chapters using `qpdf`. Top-level outline entries only are used for splitting — sub-sections are ignored to avoid over-fragmentation.
+- **Book**: has a table of contents (outline) with at least one level-1 entry. Split into chapters using `qpdf`. Top-level outline entries only are used for splitting — sub-sections are ignored to avoid over-fragmentation.
 - **Simple**: everything else. Extracted as a single document.
-- **Rejected**: filename matches sensitive patterns (e.g., "divorce", "court", "financial", "tax.return") or extension is non-operative (e.g., `.dmg`).
 
 Chapter splitting uses `qpdf` CLI to extract page ranges. Each chapter becomes a child queue item of the book parent.
 
@@ -42,10 +45,7 @@ Transcribed directly with `whisper-cpp`. The transcript is stored as the process
 **5. Video** (`.mp4`, `.mkv`, `.avi`, `.mov`, `.webm`)
 Audio is first extracted with `ffmpeg` (16kHz mono WAV), then transcribed with `whisper-cpp`. The transcript is stored as the processed text. The intermediate WAV file is cleaned up after transcription.
 
-**6. Non-operative files** (`.dmg` and others in `non_operative_extensions` config)
-Rejected immediately and logged in the queue with status `rejected`.
-
-**7. Unknown extensions**
+**6. Unknown extensions**
 Rejected with reason "unknown file type".
 
 ### Progress Display
@@ -112,4 +112,4 @@ Obsidian-native markdown:
 
 ## MCP Server (Alternative Integration)
 
-`ai-wiki-mcp` exposes the same queue and wiki operations as MCP tools for direct Claude Code integration, without the CLI subprocess approach. See the spec for tool details.
+`ai-wiki-mcp` exposes the same queue and wiki operations as MCP tools for direct Claude Code integration, without the CLI subprocess approach. The server reads `~/.ai-wiki/config.toml` on startup and serves all registered wikis — every tool call requires a `wiki` parameter. See `application.md` for the full tool list.
